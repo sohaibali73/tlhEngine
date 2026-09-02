@@ -1,0 +1,95 @@
+"""Which files the embedded co-pilot may read and propose changes to, and which tests gate each one.
+
+Anything not listed here is read-only to the AI (it can still be read via `read_module` if in READ_ONLY).
+The wash-sale suite is always run as a canary regardless of the module touched.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+CANARY_TESTS = ["tests/test_washsale.py", "tests/test_holding.py", "tests/test_ledger.py"]
+
+
+@dataclass(frozen=True)
+class EditableModule:
+    path: str
+    description: str
+    tests: list[str] = field(default_factory=list)
+    kind: str = "python"          # python | yaml
+    reload_hint: str = ""
+
+
+AI_EDITABLE: dict[str, EditableModule] = {
+    "tlh/risk/factors.py": EditableModule(
+        "tlh/risk/factors.py",
+        "Style factor definitions (raw score functions + STYLE_DEFINITIONS registry) and exposure standardisation.",
+        ["tests/test_risk.py"], reload_hint="Refit the risk model after promotion to see new factors."),
+    "tlh/risk/descriptors.py": EditableModule(
+        "tlh/risk/descriptors.py", "ERM descriptor library and style composites (size, beta, momentum, resvol, value, quality, growth, liquidity, leverage).",
+        ["tests/test_erm.py"], reload_hint="Refit an ERM model after promotion."),
+    "tlh/risk/erm.py": EditableModule(
+        "tlh/risk/erm.py", "Equity risk model estimator: WLS/Huber factor returns, EWMA vol x corr + Newey-West, eigen-adjust, VRA, specific-risk shrinkage.",
+        ["tests/test_erm.py"], reload_hint="Refit an ERM model after promotion."),
+    "tlh/risk/analytics.py": EditableModule(
+        "tlh/risk/analytics.py", "Risk decomposition, factor stress tests, historical scenarios, parametric VaR, bias tests.",
+        ["tests/test_erm.py"]),
+    "tlh/risk/model.py": EditableModule(
+        "tlh/risk/model.py",
+        "Barra-style fit: cross-sectional WLS, EWMA covariance, specific risk, ETF regression fill, macro block.",
+        ["tests/test_risk.py"], reload_hint="Refit the risk model after promotion."),
+    "tlh/optim/harvest.py": EditableModule(
+        "tlh/optim/harvest.py",
+        "Harvest optimizer formulation: objective terms, constraints, replacement search, post-processing.",
+        ["tests/test_harvest.py"], reload_hint="Re-run harvest after promotion."),
+    "tlh/optim/frontier.py": EditableModule(
+        "tlh/optim/frontier.py", "TE-budget frontier sweep and constraint-priority comparison.",
+        ["tests/test_harvest.py"]),
+    "tlh/optim/basket.py": EditableModule(
+        "tlh/optim/basket.py", "Model-portfolio construction: min-TE basket with name caps, sector band, style tilts.",
+        ["tests/test_basket.py"], reload_hint="Rebuild baskets after promotion."),
+    "tlh/optim/strategies.py": EditableModule(
+        "tlh/optim/strategies.py",
+        "Construction strategies: min-var, max-div, risk parity, HRP, mean-variance, Black-Litterman, min-CVaR, stratified index, factor tilt, tax-aware transition. Add a strategy = function + _DISPATCH entry + STRATEGIES description.",
+        ["tests/test_strategies.py"], reload_hint="Rebuild strategy baskets after promotion."),
+    "tlh/optim/pipeline.py": EditableModule(
+        "tlh/optim/pipeline.py", "TLH model pipeline schema (blocks, validation, filter/rank helpers, examples) behind the drag-and-drop builder.",
+        ["tests/test_pipeline.py"]),
+    "tlh/tax/concentration.py": EditableModule(
+        "tlh/tax/concentration.py", "Bracket-aware tax engine (LTCG/ordinary/NIIT, convex pieces), Black-Scholes collars with §1259/§1092 flags, charitable/gift/exchange-fund/step-up comparisons.",
+        ["tests/test_concentration.py"]),
+    "tlh/optim/glidepath.py": EditableModule(
+        "tlh/optim/glidepath.py", "Multi-period tax-aware diversification glide path (convex) and Monte Carlo policy comparison.",
+        ["tests/test_concentration.py"]),
+    "tlh/optim/backtest.py": EditableModule(
+        "tlh/optim/backtest.py", "Walk-forward backtester (rebalance schedule, trailing covariance/signals, costs, metrics).",
+        ["tests/test_strategies.py"]),
+    "tlh/data/substitutes.yaml": EditableModule(
+        "tlh/data/substitutes.yaml",
+        "Substantially-identical groups and wash-safe substitute candidates.",
+        ["tests/test_substitutes.py"], kind="yaml", reload_hint="Substitute map reloads immediately on promotion."),
+}
+
+READ_ONLY: list[str] = [
+    "tlh/tax/washsale.py", "tlh/tax/ledger.py", "tlh/tax/lots.py", "tlh/tax/holding.py", "tlh/tax/rates.py",
+    "tlh/risk/benchmark.py", "tlh/data/norgate.py", "tlh/data/cache.py", "tlh/data/substitutes.py",
+    "tlh/services/harvest_service.py", "tlh/services/risk_service.py", "DECISIONS.md", "CLAUDE.md",
+]
+
+NEW_FILE_PREFIXES = ["tlh/risk/custom/"]   # the AI may create new modules here (tests required)
+
+
+def is_editable(path: str) -> bool:
+    p = path.replace("\\", "/")
+    return p in AI_EDITABLE or any(p.startswith(pre) and p.endswith(".py") for pre in NEW_FILE_PREFIXES)
+
+
+def is_readable(path: str) -> bool:
+    p = path.replace("\\", "/")
+    return is_editable(p) or p in READ_ONLY or p.startswith("tests/")
+
+
+def tests_for(path: str) -> list[str]:
+    p = path.replace("\\", "/")
+    mod = AI_EDITABLE.get(p)
+    own = list(mod.tests) if mod else ["tests/test_risk.py"]
+    return list(dict.fromkeys(own + CANARY_TESTS))

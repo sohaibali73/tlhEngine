@@ -1,0 +1,206 @@
+# Substantially-identical and substitute-security reference set.
+#
+# Tiers
+#   identical_groups            -> always one wash-sale group (same issuer share classes, same security).
+#   presumed_identical_groups   -> ETFs from different issuers tracking the SAME index. The IRS has not ruled;
+#                                  conservative practice treats them as substantially identical. Controlled by
+#                                  settings key `treat_presumed_identical_as_identical` (default true).
+#   substitutes                 -> wash-safe replacement candidates: highly correlated but tracking a DIFFERENT
+#                                  index or exposure. Listed in preference order.
+#   stock_substitutes           -> rule + overrides for single stocks (peer in same GICS sub-industry by default).
+#
+# This file is AI-editable through the co-pilot's propose -> sandbox -> approve loop. Keep reasons filled in.
+version: 1
+
+identical_groups:
+  - key: alphabet
+    symbols: [GOOGL, GOOG]
+    reason: Class A and Class C of the same issuer; treated as substantially identical.
+  - key: berkshire
+    symbols: [BRK.A, BRK.B]
+    reason: Class A/B of the same issuer (B convertible economics).
+  - key: fox
+    symbols: [FOXA, FOX]
+    reason: Share classes of the same issuer.
+  - key: news_corp
+    symbols: [NWSA, NWS]
+    reason: Share classes of the same issuer.
+  - key: zillow
+    symbols: [ZG, Z]
+    reason: Share classes of the same issuer.
+  - key: liberty_formula_one
+    symbols: [FWONA, FWONK]
+    reason: Share classes of the same issuer.
+  - key: under_armour
+    symbols: [UAA, UA]
+    reason: Share classes of the same issuer.
+  - key: lennar
+    symbols: [LEN, LEN.B]
+    reason: Share classes of the same issuer.
+
+presumed_identical_groups:
+  - key: sp500
+    index: S&P 500
+    symbols: [SPY, IVV, VOO, SPLG]
+  - key: total_us_market
+    index: CRSP US Total Market / S&P Total Market / Dow Jones US
+    symbols: [VTI, ITOT, SCHB, SPTM, IWV]
+  - key: nasdaq100
+    index: Nasdaq-100
+    symbols: [QQQ, QQQM]
+  - key: russell1000
+    index: Russell 1000
+    symbols: [IWB, VONE]
+  - key: russell2000
+    index: Russell 2000
+    symbols: [IWM, VTWO]
+  - key: sp_midcap400
+    index: S&P MidCap 400
+    symbols: [MDY, IJH, SPMD, IVOO]
+  - key: sp_smallcap600
+    index: S&P SmallCap 600
+    symbols: [IJR, SPSM, VIOO]
+  - key: us_agg_bond
+    index: Bloomberg US Aggregate
+    symbols: [AGG, BND, SCHZ, SPAB]
+  - key: msci_eafe
+    index: MSCI EAFE
+    symbols: [EFA, IEFA]
+  - key: msci_em
+    index: MSCI Emerging Markets
+    symbols: [EEM, IEMG]
+  - key: sp500_value
+    index: S&P 500 Value
+    symbols: [IVE, SPYV, VOOV]
+  - key: sp500_growth
+    index: S&P 500 Growth
+    symbols: [IVW, SPYG, VOOG]
+  - key: tech_select
+    index: Technology Select Sector
+    symbols: [XLK]
+  - key: gold_bullion
+    index: Gold spot
+    symbols: [GLD, IAU, GLDM, SGOL]
+
+substitutes:
+  # Large-cap US core
+  - for: [SPY, IVV, VOO, SPLG]
+    candidates: [VTI, ITOT, SCHX, IWB, VV, SCHB]
+    reason: Total-market or Russell 1000 / Dow Jones large-cap trackers; ~0.99 correlation, different index.
+  - for: [VTI, ITOT, SCHB, SPTM, IWV]
+    candidates: [SPY, IVV, VOO, IWB, SCHX]
+    reason: S&P 500 or Russell 1000 trackers.
+  - for: [IWB, VONE]
+    candidates: [VTI, ITOT, SCHX, VOO]
+    reason: Total-market / large-cap trackers on a different index.
+  - for: [SCHX, VV]
+    candidates: [IWB, VOO, ITOT]
+    reason: Different large-cap index families.
+  - for: [QQQ, QQQM]
+    candidates: [VGT, XLK, IYW, SCHG, VUG, MGK]
+    reason: Tech / mega-cap growth proxies; not Nasdaq-100 trackers.
+  - for: [IWM, VTWO]
+    candidates: [IJR, VB, SCHA, SPSM]
+    reason: Small-cap on S&P 600 / CRSP / Dow Jones indices.
+  - for: [IJR, SPSM, VIOO]
+    candidates: [IWM, VB, SCHA]
+    reason: Small-cap on Russell / CRSP / Dow Jones indices.
+  - for: [MDY, IJH, SPMD, IVOO]
+    candidates: [VO, IWR, SCHM]
+    reason: Mid-cap on CRSP / Russell / Dow Jones indices.
+  - for: [VO, IWR, SCHM]
+    candidates: [IJH, MDY]
+    reason: S&P MidCap 400 trackers.
+  # Style
+  - for: [IVE, SPYV, VOOV]
+    candidates: [VTV, IWD, SCHV, VLUE]
+    reason: Value on CRSP / Russell / Dow Jones / MSCI indices.
+  - for: [VTV, IWD, SCHV]
+    candidates: [IVE, VLUE, DVY]
+    reason: Value on S&P / MSCI / Dow Jones Select indices.
+  - for: [IVW, SPYG, VOOG]
+    candidates: [VUG, IWF, SCHG, MGK]
+    reason: Growth on CRSP / Russell / Dow Jones indices.
+  - for: [VUG, IWF, SCHG, MGK]
+    candidates: [IVW, QQQ, VGT]
+    reason: Growth / mega-cap growth on S&P / Nasdaq indices.
+  # Sectors (Select Sector SPDR <-> Vanguard <-> iShares use different index providers)
+  - for: [XLK]
+    candidates: [VGT, IYW, FTEC]
+  - for: [VGT, IYW, FTEC]
+    candidates: [XLK, IGM]
+  - for: [XLF]
+    candidates: [VFH, IYF]
+  - for: [VFH, IYF]
+    candidates: [XLF, KBE]
+  - for: [XLV]
+    candidates: [VHT, IYH]
+  - for: [VHT, IYH]
+    candidates: [XLV, IXJ]
+  - for: [XLE]
+    candidates: [VDE, IYE]
+  - for: [VDE, IYE]
+    candidates: [XLE, XOP]
+  - for: [XLY]
+    candidates: [VCR, IYC]
+  - for: [XLP]
+    candidates: [VDC, IYK]
+  - for: [XLI]
+    candidates: [VIS, IYJ]
+  - for: [XLU]
+    candidates: [VPU, IDU]
+  - for: [XLB]
+    candidates: [VAW, IYM]
+  - for: [XLRE]
+    candidates: [VNQ, IYR, SCHH]
+  - for: [XLC]
+    candidates: [VOX, IYZ]
+  # International
+  - for: [EFA, IEFA]
+    candidates: [VEA, SCHF, SPDW]
+    reason: Developed ex-US on FTSE / Dow Jones indices.
+  - for: [VEA, SCHF, SPDW]
+    candidates: [IEFA, EFA]
+  - for: [EEM, IEMG]
+    candidates: [VWO, SCHE, SPEM]
+    reason: EM on FTSE / Dow Jones / S&P indices.
+  - for: [VWO, SCHE, SPEM]
+    candidates: [IEMG, EEM]
+  - for: [VXUS, IXUS]
+    candidates: [VEU, ACWX]
+  # Fixed income
+  - for: [AGG, BND, SCHZ, SPAB]
+    candidates: [IUSB, GOVT, BIV, VGIT]
+    reason: Different aggregate / treasury indices.
+  - for: [TLT]
+    candidates: [VGLT, SPTL, EDV]
+  - for: [IEF]
+    candidates: [VGIT, SPTI, SCHR]
+  - for: [LQD]
+    candidates: [VCIT, IGIB, SPIB]
+  - for: [HYG]
+    candidates: [JNK, USHY, SPHY]
+  - for: [JNK]
+    candidates: [HYG, USHY]
+  - for: [GLD, IAU, GLDM, SGOL]
+    candidates: [GDX, RING]
+    reason: Miners are a poor substitute for bullion; flagged low-correlation.
+
+stock_substitutes:
+  # For single stocks the optimizer picks, from the fitted universe, the highest-correlation name in the same
+  # GICS sub-industry (falling back to industry, then sector) that is not held and not wash-blocked.
+  strategy: same_gics_peer
+  min_correlation: 0.55
+  overrides:
+    AAPL: [MSFT, XLK]
+    MSFT: [AAPL, VGT]
+    NVDA: [AMD, AVGO, SMH]
+    AMZN: [WMT, COST, XLY]
+    GOOGL: [META, XLC]
+    META: [GOOGL, XLC]
+    TSLA: [GM, F, XLY]
+    JPM: [BAC, WFC, XLF]
+    XOM: [CVX, XLE]
+    CVX: [XOM, XLE]
+    UNH: [ELV, CI, XLV]
+    BRK.B: [XLF, JPM]

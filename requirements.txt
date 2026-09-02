@@ -1,0 +1,28 @@
+# Runtime requirements (Python 3.12, Windows; Norgate Data Updater must be installed separately)
+norgatedata>=1.0.74
+pandas>=2.2
+numpy>=1.26
+scipy>=1.11
+statsmodels>=0.14
+scikit-learn>=1.4
+cvxpy>=1.5
+clarabel
+osqp
+scs
+duckdb>=1.0
+pyarrow>=15
+pydantic>=2.7
+pydantic-settings>=2.2
+PySide6>=6.7
+plotly>=5.20
+xlsxwriter>=3.2
+openpyxl>=3.1
+anthropic>=0.60
+fredapi>=0.5
+PyYAML>=6.0
+python-dateutil>=2.9
+# build / dev
+pyinstaller>=6.0 ; extra == "build"
+pytest>=8 ; extra == "dev"
+hypothesis>=6 ; extra == "dev"
+ruff>=0.5 ; extra == "dev"

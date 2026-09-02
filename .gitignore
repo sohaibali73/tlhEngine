@@ -1,0 +1,17 @@
+var/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.env
+.hypothesis/
+build/
+dist/
+*.spec
+*.log
+.venv/
+venv/
+.idea/
+.vscode/
+*.xlsx
