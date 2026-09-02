@@ -1,0 +1,8 @@
+# Normalise line endings so the repo is clean across Windows / macOS / Linux checkouts.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.png binary
+*.ico binary
+*.parquet binary
+*.sqlite binary
+*.xlsx binary
