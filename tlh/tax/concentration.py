@@ -10,7 +10,10 @@ import math
 from dataclasses import dataclass, field
 
 import numpy as np
-from scipy.stats import norm
+
+from ..lazy import lazy_object
+
+norm = lazy_object("scipy.stats", "norm")   # scipy imported on first use
 
 # ====================================================================================== brackets
 # (upper bound of bracket, rate); the last bracket is open-ended (inf). Approximate 2026 figures; editable in Settings.

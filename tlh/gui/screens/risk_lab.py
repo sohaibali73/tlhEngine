@@ -187,6 +187,49 @@ class RiskLabScreen(QWidget):
         vl.addWidget(vs, 1)
         self.tabs.addTab(v, "Validation")
 
+        # calibration study (which window / weighting / estimator forecasts best)
+        c = QWidget()
+        cl = QVBoxLayout(c)
+        cform = QHBoxLayout()
+        self.cal_quick = QCheckBox("quick grid (5 lookbacks × 2 horizons, 250 names)")
+        self.cal_quick.setChecked(True)
+        self.cal_pca = QCheckBox("add PCA arm")
+        self.cal_hold = QCheckBox("score my holdings as a basket")
+        self.cal_hold.setChecked(True)
+        self.cal_btn = button("Run calibration study", self.run_calibration, primary=True)
+        self.cal_apply = button("Apply recommendation & fit", self.apply_calibration, success=True)
+        self.pair_btn = button("Substitute-pair TE study", self.run_pairs)
+        for wdg in (self.cal_quick, self.cal_pca, self.cal_hold, self.cal_btn, self.cal_apply, self.pair_btn):
+            cform.addWidget(wdg)
+        cform.addStretch(1)
+        cl.addLayout(cform)
+        cnote = QLabel("Walk-forward, non-overlapping forward windows anchored to the longest lookback. Every scenario forecasts the same realised "
+                       "covariance; the six metrics are ranked within each horizon and averaged into Score (lower is better). Port of the 2026 "
+                       "Potomac calibration study, extended with a PCA arm and your own holdings as a test basket.")
+        cnote.setWordWrap(True)
+        cnote.setProperty("muted", True)
+        cl.addWidget(cnote)
+        self.cal_reco = TextPanel("Recommendation")
+        cl.addWidget(self.cal_reco)
+        ctabs = QTabWidget()
+        self.cal_board = FrameTable(["Horizon", "RankInHorizon", "Lookback", "Weighting", "Estimator", "Score", "BiasRatio", "Spearman", "CorrBias",
+                                     "CorrRMSE", "CorrSpearman", "TEBiasRatio", "TESpearman", "Dates", "AliveMean"])
+        self.cal_lb = FrameTable(None)
+        self.cal_wt = FrameTable(None)
+        self.cal_est = FrameTable(None)
+        self.cal_chart = charts.PlotlyView()
+        self.pair_table = FrameTable(["pair", "Lookback", "Weighting", "Estimator", "n", "forecast_te", "realised_te", "bias", "spearman"],
+                                     pct_cols={"forecast_te", "realised_te"})
+        ctabs.addTab(self.cal_board, "Scoreboard")
+        ctabs.addTab(self.cal_chart, "Chart")
+        ctabs.addTab(self.cal_lb, "By lookback")
+        ctabs.addTab(self.cal_wt, "By weighting")
+        ctabs.addTab(self.cal_est, "By estimator")
+        ctabs.addTab(self.pair_table, "Substitute pairs")
+        cl.addWidget(ctabs, 1)
+        self.tabs.addTab(c, "Calibration")
+        self._cal = None
+
     # ------------------------------------------------------------------ refresh
     def refresh(self) -> None:
         if self.rs.active() is None:
@@ -295,3 +338,61 @@ class RiskLabScreen(QWidget):
         self.bias_summary.set_frame(df)
         self.bias_detail.set_frame(df.attrs.get("detail", pd.DataFrame()))
         self.app.status("Bias test complete.")
+
+    # ------------------------------------------------------------------ calibration
+    def run_calibration(self) -> None:
+        self.cal_btn.setEnabled(False)
+        self.app.status("Calibration study running… (quick grid ≈ 1–2 min, full grid several minutes)")
+        run_task(self.rs.calibrate, self.cal_quick.isChecked(), self.cal_pca.isChecked(), self.cal_hold.isChecked(),
+                 on_done=self._cal_done, on_error=lambda m: (self.cal_btn.setEnabled(True), self.app.error(m)), on_progress=self.app.status)
+
+    def _cal_done(self, out: dict) -> None:
+        self.cal_btn.setEnabled(True)
+        self._cal = out
+        board = out["scoreboard"].copy()
+        for c in ("Score", "BiasRatio", "Spearman", "CorrBias", "CorrRMSE", "CorrSpearman", "TEBiasRatio", "TESpearman", "AliveMean"):
+            board[c] = board[c].round(3)
+        self.cal_board.set_frame(board)
+        self.cal_lb.set_frame(out["by_lookback"].round(3))
+        self.cal_wt.set_frame(out["by_weighting"].round(3))
+        self.cal_est.set_frame(out["by_estimator"].round(3))
+        rec = out["recommendation"]
+        w = out["winners"]
+        lines = [rec["text"], ""]
+        for _, r in w.iterrows():
+            lines.append(f"{int(r['Horizon'])}d horizon → {int(r['Lookback'])}d {r['Weighting']} {r['Estimator']} (score {r['Score']:.2f}, TE bias {r['TEBiasRatio']:.3f}, TE ρ {r['TESpearman']:.3f})")
+        self.cal_reco.set_text("\n".join(lines))
+        fig = go.Figure()
+        for est, blk in out["by_lookback"].groupby("Horizon"):
+            fig.add_scatter(x=blk["Lookback"], y=blk["Score"], mode="lines+markers", name=f"{int(est)}d horizon")
+        fig.update_layout(title="Composite score by lookback (lower is better)", xaxis_title="lookback (days)", yaxis_title="mean rank", height=340)
+        self.cal_chart.set_figure(fig)
+        self.app.status("Calibration study complete.")
+
+    def apply_calibration(self) -> None:
+        rec = (self._cal or {}).get("recommendation") or (self.ctx.get("last_calibration") or {}).get("recommendation")
+        if not rec:
+            self.app.status("Run the calibration study first.")
+            return
+        spec = self.rs.spec_from_recommendation(rec)
+        self.rs.save_spec(spec)
+        snap = self.rs.data_snapshot()
+        self.app.status(f"Fitting calibrated model: {rec['lookback']}d {rec['weighting']} {rec['estimator']}…")
+        run_task(self.rs.fit, snap, spec, on_done=lambda out: (self.app.status(f"Model #{out[0]} fitted and activated."), self.app.data_changed()),
+                 on_error=self.app.error, on_progress=self.app.status)
+
+    def run_pairs(self) -> None:
+        self.pair_btn.setEnabled(False)
+        run_task(self.rs.pair_study, None, 63, on_done=self._pairs_done, on_error=lambda m: (self.pair_btn.setEnabled(True), self.app.error(m)),
+                 on_progress=self.app.status)
+
+    def _pairs_done(self, df: pd.DataFrame) -> None:
+        self.pair_btn.setEnabled(True)
+        if df.empty:
+            self.app.status("No substitute pairs with enough history in the snapshot.")
+            return
+        self.pair_table.set_frame(df.round(4))
+        best = df.sort_values("abs_bias_dev").groupby("pair").head(1)
+        self.cal_reco.set_text(self.cal_reco.body.text() + "\n\nSubstitute pairs (least biased spec per pair):\n" +
+                               "\n".join(f"{r['pair']}: {int(r['Lookback'])}d {r['Weighting']} {r['Estimator']} (bias {r['bias']:.2f})" for _, r in best.iterrows()))
+        self.app.status("Pair study complete.")

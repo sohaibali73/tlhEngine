@@ -568,10 +568,12 @@ class BasketRepo:
     def save(self, name: str, weights: pd.Series, description: str | None = None, source: str = "manual",
              benchmark_name: str | None = None, params: dict | None = None, metrics: dict | None = None,
              resolve=None) -> int:
-        w = weights[weights > 0].astype(float)
-        if w.empty:
+        has_short = bool((weights < 0).any())
+        w = weights[weights.abs() > 1e-12].astype(float) if has_short else weights[weights > 0].astype(float)
+        if w.empty or not (w > 0).any():
             raise ValueError("basket has no positive weights")
-        w = w / w.sum()
+        if not has_short:                       # long-only baskets are stored normalised; long/short books keep signed weights (net = 1)
+            w = w / w.sum()
         with self.db.transaction():
             r = self.db.fetchone("SELECT id FROM baskets WHERE name = ?", (name,))
             if r:

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QPlainTextEdit,
@@ -95,6 +96,22 @@ class BasketsScreen(QWidget):
         self.build_btn = button("Build basket", self.build, primary=True)
         f.addRow(self.build_btn)
         lay.addWidget(g)
+        gs = QGroupBox("Sample model portfolios (one click)")
+        gsl = QVBoxLayout(gs)
+        from ...optim.basket_library import LIBRARY
+        lbl = QLabel(f"{len(LIBRARY)} ready-made recipes: index trackers, integrated multi-factor, defensive equity, quality-momentum, risk parity, "
+                     "HRP, style tilts, min-CVaR, Black-Litterman and 130/30 / 145/45 long-short tax engines. Built against the live snapshot "
+                     "and active model; each becomes a normal saved basket.")
+        lbl.setWordWrap(True)
+        lbl.setProperty("muted", True)
+        gsl.addWidget(lbl)
+        self.lib_aud = QComboBox()
+        self.lib_aud.addItem("all recipes", None)
+        for a in ("core", "growth", "defensive", "income", "long_short"):
+            self.lib_aud.addItem(a, a)
+        self.lib_btn = button("Build sample library", self.build_library, success=True)
+        gsl.addWidget(hbox(self.lib_aud, self.lib_btn))
+        lay.addWidget(gs)
         g2 = QGroupBox("Saved baskets")
         gl = QVBoxLayout(g2)
         self.table = FrameTable(BASKET_COLS, filter_box=False)
@@ -229,7 +246,25 @@ class BasketsScreen(QWidget):
 
     def _fail(self, msg: str) -> None:
         self.build_btn.setEnabled(True)
+        self.lib_btn.setEnabled(True)
         self.app.error(msg)
+
+    def build_library(self) -> None:
+        if self.app.risk_service.active() is None:
+            QMessageBox.information(self, "No risk model", "Fit a risk model first.")
+            return
+        self.lib_btn.setEnabled(False)
+        self.app.status("Building the sample model-portfolio library…")
+        run_task(self.svc.build_library, None, self.lib_aud.currentData(), on_done=self._lib_done, on_error=self._fail, on_progress=self.app.status)
+
+    def _lib_done(self, df: pd.DataFrame) -> None:
+        self.lib_btn.setEnabled(True)
+        ok = int(df["status"].astype(str).str.startswith(("optimal", "closed", "mixed")).sum()) if not df.empty else 0
+        self.app.status(f"Sample library built: {ok} of {len(df)} baskets succeeded.")
+        self.info.setPlainText("Sample library results:\n\n" + df.drop(columns=["pitch"], errors="ignore").to_string(index=False))
+        self.tabs.setCurrentWidget(self.info)
+        self.refresh()
+        self.data_changed.emit()
 
     def _set_bench(self) -> None:
         if not self._sel:

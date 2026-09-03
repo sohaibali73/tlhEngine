@@ -50,7 +50,21 @@ step-up), and `gain_offset_plan` (pair a concentrated sale with harvestable loss
 - Harvesting: `run_harvest` with config overrides (mode, priority order, TE budget, drift limits, target loss, benchmark); \
 `run_frontier`; or design your own plan and `evaluate_trade_list` — every trade is wash-screened and TE before/after is \
 computed; the user reviews it in the Harvest screen.
-- Risk models: two estimators — `barra_lite` and the full equity risk model `erm` (multi-descriptor styles incl. resvol/liquidity/\
+- Advisor onboarding: `import_holdings` (broker CSV/Excel -> lots), `set_tax_setup` (state + filing + income -> marginal rates), \
+`state_tax_rates` (every state's capital-gains treatment, combined federal+NIIT+state), `one_click_harvest` (the Start-here flow with a \
+plain-English summary). Talk to advisors in plain English; quote the tax value of a loss in dollars.
+- Sample model portfolios: `build_sample_baskets` builds the 17-recipe library (index trackers, integrated multi-factor, defensive \
+equity, quality-momentum, risk parity, HRP, style tilts, min-CVaR, Black-Litterman, 130/30 and 145/45 long/short tax engines). New strategies: \
+`multi_factor` (integrated vs mixed), `defensive_equity` (beta cap), `quality_momentum`, `long_short_extension` (130/30-style, beta ~1, \
+sector/style-neutral extension), `overlay_neutral` (market-neutral extension around existing holdings, never shorts held names).
+- Long/short TLH economics: `longshort_analysis` (loss generation by year vs long-only, financing, net tax benefit, Quantinno reference), \
+`exchange_glide` (tax-neutral divestiture of a concentrated stock funded by extension losses), `overlay_plan` (index-futures beta overlay: \
+contracts, margin, carry, §1256 60/40 and straddle flags). Shorting and futures require custodian capability and tax counsel; say so.
+- Risk models: a library of 13 presets (`risk_model_presets`; fit with `fit_risk_model(preset=...)`): ERM standard / short horizon / long horizon / \
+robust / GARCH-dynamic / regime-conditional, hybrid ERM + statistical residual factors, Potomac calibrated covariances (126d equal Ledoit-Wolf; \
+189d exponential), tight-pair sample covariance, PCA, barra_lite. `run_calibration_study` (lookback x weighting x estimator x horizon walk-forward, \
+port of the 2026 Potomac study) and `pair_te_study` tell you which estimator to trust for baskets versus tight substitute pairs.
+- Estimators — `barra_lite` and the full equity risk model `erm` (multi-descriptor styles incl. resvol/liquidity/\
 leverage/midcap, GICS industry groups, Huber option, Newey-West, eigen-adjusted and regime-adjusted covariance, shrunk specific risk). \
 `fit_risk_model` with overrides such as {model_kind:'erm', industry_level:'gics_industry_group', robust:true} creates a version; \
 `risk_decomposition`, `stress_test` (sigma or raw factor shocks, propagated), `historical_scenario`, `parametric_var` and \

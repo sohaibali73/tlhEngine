@@ -20,6 +20,31 @@ from .norgate import NorgateClient
 
 log = logging.getLogger(__name__)
 
+# In-memory cache of snapshot frames keyed by (file path, kind); invalidated by file mtime. Snapshots are immutable, so
+# hits are safe; this removes the 1-2 s Parquet/DuckDB pivot that every fit, harvest, KPI refresh and strategy paid.
+_FRAME_CACHE: dict[tuple, tuple[float, object]] = {}
+_FRAME_CACHE_MAX = 24
+
+
+def _cached(path: Path, kind: str, build):
+    key = (str(path), kind)
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return build()
+    hit = _FRAME_CACHE.get(key)
+    if hit is not None and hit[0] == mtime:
+        return hit[1]
+    val = build()
+    if len(_FRAME_CACHE) >= _FRAME_CACHE_MAX:
+        _FRAME_CACHE.pop(next(iter(_FRAME_CACHE)))
+    _FRAME_CACHE[key] = (mtime, val)
+    return val
+
+
+def clear_frame_cache() -> None:
+    _FRAME_CACHE.clear()
+
 
 @dataclass
 class Snapshot:
@@ -34,7 +59,9 @@ class Snapshot:
     # lazy loaders -----------------------------------------------------------------------
     def _read(self, name: str) -> pd.DataFrame:
         p = self.path / f"{name}.parquet"
-        return pd.read_parquet(p) if p.exists() else pd.DataFrame()
+        if not p.exists():
+            return pd.DataFrame()
+        return _cached(p, "raw", lambda: pd.read_parquet(p))
 
     def prices(self) -> pd.DataFrame:
         return self._read("prices")
@@ -65,7 +92,11 @@ class Snapshot:
         return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
 
     def close_matrix(self, field: str = "close") -> pd.DataFrame:
-        """Wide date x symbol matrix straight from Parquet via DuckDB (fast pivot)."""
+        """Wide date x symbol matrix straight from Parquet via DuckDB (fast pivot); cached in memory per snapshot."""
+        pp = self.path / "prices.parquet"
+        return _cached(pp, f"matrix:{field}", lambda: self._close_matrix(field)) if pp.exists() else pd.DataFrame()
+
+    def _close_matrix(self, field: str) -> pd.DataFrame:
         p = (self.path / "prices.parquet").as_posix()
         con = duckdb.connect()
         try:
@@ -81,6 +112,10 @@ class Snapshot:
         return wide
 
     def last_prices(self) -> pd.Series:
+        pp = self.path / "prices.parquet"
+        return _cached(pp, "last_prices", self._last_prices) if pp.exists() else pd.Series(dtype=float)
+
+    def _last_prices(self) -> pd.Series:
         p = (self.path / "prices.parquet").as_posix()
         con = duckdb.connect()
         try:

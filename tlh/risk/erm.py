@@ -426,4 +426,4 @@ def fit_erm(prices: pd.DataFrame, securities: pd.DataFrame, fundamentals: pd.Dat
     }
     say("ERM fit complete.")
     return {"exposures": X_end, "factor_cov": factor_cov, "specific_var": spec_var, "factor_returns": F_ret, "diagnostics": diagnostics,
-            "as_of": t_end.date(), "style_cols": style_cols}
+            "as_of": t_end.date(), "style_cols": style_cols, "residuals": U}

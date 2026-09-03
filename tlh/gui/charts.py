@@ -1,6 +1,8 @@
 """Plotly figures rendered inside QWebEngineView with a click bridge back into Qt.
 
-plotly.min.js is written once to var/ and referenced by file URL so charts work offline and render fast.
+Speed design: each view loads a small HTML shell (plotly.min.js from var/ by file URL) exactly once; every later
+`set_figure` pushes only the figure JSON with `Plotly.react`, so charts update in tens of milliseconds instead of
+re-parsing a 4 MB script and rebuilding the page. Figures requested before the shell is ready are queued.
 """
 from __future__ import annotations
 
@@ -40,23 +42,39 @@ class _Bridge(QObject):
             pass
 
 
-HTML = """<!doctype html><html><head><meta charset="utf-8">
+SHELL = """<!doctype html><html><head><meta charset="utf-8">
 <script src="{js}"></script>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-<style>html,body{{margin:0;padding:0;background:{bg};overflow:hidden}} #c{{width:100vw;height:100vh}}</style>
+<style>html,body{{margin:0;padding:0;background:{bg};overflow:hidden;font-family:'Segoe UI',sans-serif}}
+#c{{width:100vw;height:100vh}} .msg{{color:{muted};padding:20px;font-size:13px}}</style>
 </head><body><div id="c"></div>
 <script>
-var fig = {fig};
-Plotly.newPlot('c', fig.data, fig.layout, {{responsive:true, displaylogo:false, modeBarButtonsToRemove:['lasso2d','select2d']}});
-new QWebChannel(qt.webChannelTransport, function(ch) {{
-  var bridge = ch.objects.bridge;
-  document.getElementById('c').on('plotly_click', function(d) {{
+var bridge = null;
+new QWebChannel(qt.webChannelTransport, function(ch) {{ bridge = ch.objects.bridge; }});
+var CFG = {{responsive:true, displaylogo:false, modeBarButtonsToRemove:['lasso2d','select2d']}};
+function bindClick(el) {{
+  if (el._tlhBound) return;
+  el._tlhBound = true;
+  el.on('plotly_click', function(d) {{
+    if (!bridge) return;
     var pts = d.points.map(function(p) {{ return {{x: p.x, y: p.y, text: p.text, curve: p.curveNumber, index: p.pointNumber,
       customdata: p.customdata, name: p.data.name}}; }});
     bridge.onClick(JSON.stringify({{points: pts}}));
   }});
-}});
-window.addEventListener('resize', function() {{ Plotly.Plots.resize('c'); }});
+}}
+function render(fig) {{
+  var el = document.getElementById('c');
+  el.innerHTML = el.innerHTML && !el.data ? '' : el.innerHTML;
+  Plotly.react(el, fig.data, fig.layout, CFG).then(function() {{ bindClick(el); }});
+}}
+function message(html) {{
+  var el = document.getElementById('c');
+  try {{ Plotly.purge(el); }} catch (e) {{}}
+  el._tlhBound = false;
+  el.innerHTML = '<div class="msg">' + html + '</div>';
+}}
+window.addEventListener('resize', function() {{ var el = document.getElementById('c'); if (el.data) Plotly.Plots.resize(el); }});
+document.title = 'ready';
 </script></body></html>"""
 
 
@@ -72,17 +90,48 @@ class PlotlyView(QWebEngineView):
         self._bridge.clicked.connect(self.point_clicked)
         self.page().setBackgroundColor(theme.BG)
         self.setMinimumHeight(200)
+        self._ready = False
+        self._loading = False
+        self._pending: tuple[str, str] | None = None      # ("render", json) | ("message", html)
+        self.loadFinished.connect(self._on_loaded)
 
+    # ------------------------------------------------------------------ shell lifecycle
+    def _ensure_shell(self) -> None:
+        if self._ready or self._loading:
+            return
+        self._loading = True
+        js = QUrl.fromLocalFile(str(plotly_js_path())).toString()
+        html = SHELL.format(js=js, bg=theme.BG, muted=theme.MUTED)
+        self.setHtml(html, QUrl.fromLocalFile(str(get_settings().var_dir) + "/"))
+
+    def _on_loaded(self, ok: bool) -> None:
+        self._loading = False
+        self._ready = bool(ok)
+        if self._ready and self._pending is not None:
+            kind, payload = self._pending
+            self._pending = None
+            self._dispatch(kind, payload)
+
+    def _dispatch(self, kind: str, payload: str) -> None:
+        if not self._ready:
+            self._pending = (kind, payload)
+            self._ensure_shell()
+            return
+        if kind == "render":
+            self.page().runJavaScript(f"render({payload});")
+        else:
+            self.page().runJavaScript(f"message({json.dumps(payload)});")
+
+    # ------------------------------------------------------------------ public API
     def set_figure(self, fig: go.Figure) -> None:
         fig.update_layout(**theme.plotly_layout(**{k: v for k, v in (fig.layout.to_plotly_json() or {}).items()
                                                    if k in ("title", "height", "margin", "barmode", "showlegend", "legend",
-                                                            "xaxis", "yaxis", "xaxis2", "yaxis2", "polar", "annotations", "shapes")}))
-        js = QUrl.fromLocalFile(str(plotly_js_path())).toString()
-        html = HTML.format(js=js, bg=theme.BG, fig=fig.to_json())
-        self.setHtml(html, QUrl.fromLocalFile(str(get_settings().var_dir) + "/"))
+                                                            "xaxis", "yaxis", "xaxis2", "yaxis2", "polar", "annotations", "shapes",
+                                                            "geo", "coloraxis", "hovermode")}))
+        self._dispatch("render", fig.to_json())
 
     def set_message(self, text: str) -> None:
-        self.setHtml(f"<html><body style='background:{theme.BG};color:{theme.MUTED};font-family:Segoe UI;padding:20px'>{text}</body></html>")
+        self._dispatch("message", text)
 
 
 # ====================================================================================== figure builders
@@ -220,7 +269,7 @@ def cumulative_harvest_chart(closures, title: str = "Cumulative realised losses 
 
 def factor_returns_chart(fr, title: str = "Cumulative factor returns") -> go.Figure:
     fig = go.Figure()
-    cols = [c for c in fr.columns if not c.startswith("sec:")]
+    cols = [c for c in fr.columns if not str(c).startswith(("sec:", "ind:", "stat:"))]
     cum = (1 + fr[cols]).cumprod() - 1
     for c in cols:
         fig.add_scatter(x=cum.index, y=cum[c] * 100, mode="lines", name=c)
@@ -234,4 +283,33 @@ def factor_vol_compare(df, title="Factor volatility by model version") -> go.Fig
         if c.startswith("vol_"):
             fig.add_bar(name=c, x=df.index, y=df[c] * 100)
     fig.update_layout(title=title, barmode="group", yaxis_title="annualised vol (%)", height=340)
+    return fig
+
+
+def state_tax_map(df, value_col: str = "lt_top_rate", title: str = "Top combined state rate on long-term gains") -> go.Figure:
+    """Choropleth of US states. `df` has columns: abbrev, name, and `value_col` (fraction)."""
+    fig = go.Figure(go.Choropleth(locations=df["abbrev"], locationmode="USA-states", z=(df[value_col] * 100).round(2),
+                                  text=df["name"], colorscale=[[0, theme.BG3], [0.5, theme.AMBER], [1, theme.RED]],
+                                  marker_line_color=theme.BORDER, colorbar=dict(title="%", ticksuffix="%"),
+                                  hovertemplate="%{text}: %{z:.2f}%<extra></extra>", customdata=df["abbrev"]))
+    fig.update_layout(title=title, height=420, geo=dict(scope="usa", bgcolor=theme.BG, lakecolor=theme.BG, landcolor=theme.BG2,
+                                                          subunitcolor=theme.BORDER, showlakes=False), margin=dict(l=0, r=0, t=40, b=0))
+    return fig
+
+
+def wealth_projection(years, no_tlh, tlh, title: str = "After-tax wealth: with vs without harvesting") -> go.Figure:
+    fig = go.Figure()
+    fig.add_scatter(x=years, y=no_tlh, mode="lines", name="Buy and hold", line=dict(color=theme.MUTED, width=2))
+    fig.add_scatter(x=years, y=tlh, mode="lines", name="With tax-loss harvesting", line=dict(color=theme.GREEN, width=3), fill="tonexty",
+                    fillcolor="rgba(34,197,94,0.15)")
+    fig.update_layout(title=title, xaxis_title="years", yaxis_title="$", height=320, hovermode="x unified")
+    return fig
+
+
+def savings_gauge(value: float, max_value: float, title: str = "Estimated tax saved this year") -> go.Figure:
+    fig = go.Figure(go.Indicator(mode="gauge+number", value=value, number=dict(prefix="$", valueformat=",.0f"),
+                                 gauge=dict(axis=dict(range=[0, max(max_value, value * 1.2, 1.0)], tickprefix="$", tickformat=",.0f"),
+                                            bar=dict(color=theme.GREEN), bgcolor=theme.BG2, bordercolor=theme.BORDER,
+                                            steps=[dict(range=[0, max_value * 0.5], color=theme.BG3), dict(range=[max_value * 0.5, max_value], color="#233041")])))
+    fig.update_layout(title=title, height=260, margin=dict(l=30, r=30, t=50, b=10))
     return fig

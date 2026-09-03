@@ -28,6 +28,12 @@ PARAM_HINTS = {
     "tax_aware_transition": ["target_weights {SYM: w} or target basket", "gain_budget (fraction of value)", "turnover_max", "cost_bps"],
     "stratified_index": ["size_buckets"], "min_variance": ["te_penalty"], "risk_parity": [], "hrp": [], "max_diversification": [],
     "equal_weight": [], "cap_weight": [],
+    "multi_factor": ["signal_weights (default value/momentum/quality/lowvol = 1)", "integrated (True) | mixed sleeves (False)", "sector_neutral_scores", "ic", "risk_aversion"],
+    "defensive_equity": ["beta_cap (0.85)", "signal_weights (lowvol/quality)", "risk_aversion", "te_penalty"],
+    "quality_momentum": ["ic", "risk_aversion", "sector_band"],
+    "long_short_extension": ["extension (0.30 = 130/30)", "short_max_weight", "beta_target", "beta_tolerance", "extension_neutral", "signal_weights", "ic", "risk_aversion"],
+    "overlay_neutral": ["extension (0.30 = 30/30 around current holdings)", "short_max_weight", "extension_neutral", "signal_weights", "ic", "risk_aversion"],
+    "levered_beta": ["target_beta (1.5)", "lev_instruments (SSO, UPRO, SPXL, SPUU)", "etf_max_weight", "margin_max (0 = cash only)", "margin_rate", "margin_buffer", "cost_weight"],
 }
 
 
@@ -66,7 +72,13 @@ class StrategyService:
             cov = shrunk_sample_cov(R[[s for s in syms if s in R.columns]])
         else:
             cov = model.covariance(sorted(set(syms) | set(model.symbols)))
-        bench = self.risk.benchmark_weights(snap, model, benchmark_name)
+        bench_used = benchmark_name
+        if strategy.kind == "levered_beta":
+            # target is `beta x the index`: use the index watchlist even if the house benchmark is currently a saved basket
+            name = benchmark_name or self.risk.benchmark_name()
+            if not benchmark_name or name.lower().startswith("basket:"):
+                bench_used = self.ctx.settings.default_benchmark
+        bench = self.risk.benchmark_weights(snap, model, bench_used)
         styles = [c for c in model.factors if c in model.spec.styles]
         px = snap.last_prices()
         shares = pd.to_numeric(sec.get("shares_outstanding"), errors="coerce")
@@ -89,7 +101,7 @@ class StrategyService:
         inp = StrategyInputs(symbols=syms, cov=cov, benchmark=bench, returns=R, signals=model.exposures[styles],
                              exposures=model.exposures, sectors=sec["gics_sector"] if "gics_sector" in sec else None,
                              mktcap=mktcap, current_weights=cur_w, gain_frac=gain_frac, rf=rf)
-        meta = {"snapshot_id": snap.id, "model_version_id": act[0], "benchmark": benchmark_name or self.risk.benchmark_name(),
+        meta = {"snapshot_id": snap.id, "model_version_id": act[0], "benchmark": bench_used or self.risk.benchmark_name(),
                 "cov_source": cov_source, "n_universe": len(syms)}
         return inp, meta
 

@@ -1,7 +1,7 @@
 # TLH Engine with YANG: the algorithms, the rigor, and why tax-loss harvesting should be AI-assisted
 
 *Technical and positioning write-up. Everything described here is implemented in this repository and covered by the
-test suite (198 tests, wash-sale and holding-period rules hand-verified against IRS Publication 550 examples).*
+test suite (231 tests, wash-sale and holding-period rules hand-verified against IRS Publication 550 examples).*
 
 ---
 
@@ -14,7 +14,7 @@ different two securities really are, an optimizer that trades tax alpha against 
 tripping a wash sale, and a multi-year view of embedded gains, brackets and concentration.
 
 TLH Engine puts all four in a single desktop application and adds **YANG**, an embedded co-pilot built on Claude that
-operates the engine through 47 typed tools. YANG can run and tune harvests, build model portfolios with a dozen
+operates the engine through 63 typed tools. YANG can run and tune harvests, build model portfolios with a dozen
 construction strategies, design and evaluate trade plans, fit and validate risk-model variants, plan multi-year
 diversification of concentrated positions, and even propose changes to the engine's own code, all inside guardrails:
 it cannot trade, it cannot bypass the wash-sale engine, and every code change runs in a sandbox with the compliance
@@ -323,7 +323,7 @@ system enforces.
 
 ## 11. Engineering rigor
 
-- 198 automated tests; the tax rules are tested with hand-computed expected values, including Publication 550's
+- 222 automated tests; the tax rules are tested with hand-computed expected values, including Publication 550's
   partial-wash example (100 shares sold, 75 replacement shares, $750 of $1,000 disallowed), IRA replacements, share-class
   groups, same-day buy-and-sell preservation of total loss, retroactive washes, and every day of the 61-day window.
 - Convex formulations verified against independent computations (hinge-function tax equals bracket tax; tracking
@@ -351,3 +351,90 @@ system enforces.
 
 Read-only broker connectivity for live holdings (still no order routing), point-in-time fundamentals, household-level
 asset location across taxable and deferred accounts, and multi-client batch runs with YANG-written client letters.
+
+---
+
+## 14. September 2026 additions: the flagship release
+
+### 14.1 A model library instead of a model
+The engine now ships thirteen named risk models, each a `RiskModelSpec` preset with a one-paragraph rationale. Three
+families:
+
+- **Fundamental.** ERM standard, short-horizon (fast half-lives for a one-month decision), long-horizon (four-year
+  window for strategic budgets), robust (Huber cross-sections), plus barra_lite with and without the macro block.
+- **Statistical.** The *Potomac calibrated covariance* from the 2026 calibration study (126-day window, equal weights,
+  Ledoit-Wolf constant-correlation shrinkage; 189-day exponential for the one-month horizon), the tight-pair sample
+  covariance for near-identical substitutes, and an asymptotic PCA model whose factor count comes from the
+  Ahn-Horenstein eigenvalue-ratio test. Statistical covariances travel through the same `FittedRiskModel` object as
+  eigen-factor models (`stat:k` factors), so optimizers and analytics need no special case.
+- **Hybrid and dynamic.** ERM plus principal components of its own residuals (co-movement the descriptors miss), and two
+  dynamic factor covariances for any fundamental model: GARCH(1,1) variance forecasts per factor over the decision
+  horizon with EWMA correlations, and a calm/stress mixture weighted by the probability of stress given today's market
+  volatility.
+
+### 14.2 Calibration as a feature
+The calibration study that chose the statistical model is now a tool, not a document. The Risk lab re-runs the
+walk-forward grid (lookback x weighting x estimator x horizon) on the live snapshot with non-overlapping forward
+windows anchored to the longest lookback, twenty seeded five-name baskets against the equal-weight universe, sampled
+pairs and the seven metrics of the original paper (volatility bias ratio and Spearman, correlation bias, RMSE and
+Spearman, tracking-error bias ratio and Spearman) ranked within horizon into a composite score. Two extensions: a PCA
+arm in the estimator grid and the client's own holdings as an additional test basket. A substitute-pair study shows
+the one place the recommendation reverses: a 0.997 correlation shrunk toward the universe average triples the forecast
+tracking error of an IVV-versus-SPY pair, so pairs use the unshrunk sample matrix.
+
+### 14.3 Construction beyond long-only
+Five strategies join the twelve: an **integrated multi-factor** portfolio (value, momentum, quality and low volatility
+combined into one sector-neutral score, with the "mixed sleeves" alternative for comparison), **defensive equity** with
+a covariance-implied beta cap, **quality-momentum**, a **130/30-style long/short extension** and a **market-neutral
+overlay** around existing holdings. The long/short solver splits names into disjoint tranches by composite score
+before optimising (the bottom tranche is short-eligible, the rest long-eligible), so a name is never held long and
+short at once, the extension is sector- and style-neutral, and the net book carries the target beta. The point of the
+extension is continuous loss generation: `optim/longshort.py` simulates net capital losses by year for long-only and
+long/short books from first principles (basis dispersion, volatility, wash lockouts), prices the financing, and builds
+the tax-neutral "Exchange" glide that divests a concentrated position at exactly the pace the extension's losses pay
+for. Published industry profiles are carried as reference data for comparison only. `optim/overlay.py` sizes
+index-futures beta overlays (micro and E-mini contracts, SPAN-style margin, carry) and states the Section 1256 and
+straddle questions that tax counsel must clear. A seventeen-recipe **sample model-portfolio library** builds all of it
+in one click.
+
+### 14.4 Every state's tax rules
+`tax/state_rates.yaml` encodes how each of the fifty states and DC taxes capital gains: ordinary treatment, no tax,
+percentage exclusions (Arkansas, New Mexico, North Dakota, South Carolina, Vermont, Wisconsin), flat capital-gains
+rates (Hawaii, Massachusetts, Montana), Washington's excise, and the investment-income surtaxes of Maryland,
+Massachusetts and Minnesota, with simplified brackets and local-tax notes. Combined with the federal schedules and
+NIIT this yields the marginal short- and long-term rates a harvested loss is worth for a client in any state at any
+income. The figures are approximate planning values and are labelled as such wherever they appear.
+
+### 14.5 Built for the person who is not a quant
+A **Start here** screen reduces the product to three clicks: import a broker export (column names are mapped from a
+dictionary of broker aliases; missing dates and costs get documented defaults and a flag), pick the client's state,
+filing status and income, and press one button that refreshes data, fits a model if none exists, runs the wash-safe
+harvest and explains the result in sentences generated from the numbers. A simple mode hides the quant workbenches; an
+expert mode shows them. YANG gained tools for the same flow (`import_holdings`, `set_tax_setup`, `state_tax_rates`,
+`one_click_harvest`) so the conversation can start from "here is the client's Schwab file".
+
+### 14.6 Leverage without futures, and a tactical overlay for Potomac's strategies
+The custodians that hold advisory accounts do not offer futures and do not permit direct shorting, but they do allow
+leveraged and inverse ETFs on margin. The `levered_beta` model therefore builds a 1.5-beta book from S&P 500 stocks plus
+2x/3x S&P funds and an optional Reg-T loan, minimising tracking variance against 1.5 times the index plus the real
+costs of leverage (fund expense ratios, the volatility drag of daily rebalancing, margin interest) under initial-margin,
+house-maintenance-by-leverage and equity-buffer constraints. Tracking error comes first: by default every index name is
+held at 1.5 times its weight (full replication, no name cap, no minimum position), so the stock sleeve tracks the index
+exactly and the only tracking error is what the leverage layer adds. Leveraged funds are modelled as k times the index
+basket itself plus their measured tracking noise, because a fitted time-series beta under-states a 2x fund and would
+under-size the position, and because a fitted fund row carries an idiosyncratic term that would make the fund look
+riskier than it is. Costs are compared on one footing: a fund pays its expense ratio, the financing embedded in its swaps
+and the volatility drag of daily rebalancing, a loan pays margin interest. On live data the default book (index at 1.5x
+on a 50% loan) has a model tracking error of about 0.03% and a realised leverage-layer tracking error of about 0.3% a year
+at monthly rebalancing; the cash-only book, where 2x and 3x funds carry the leverage, is about 0.5%. The model is always
+built against the index benchmark, never against a saved basket. The margin report states the uniform market drop that
+would trigger a call. The tactical overlay is the plug-in for Potomac's own strategies: a
+signal (strategy export, manual beta, or a blend) sets a target beta between 0 and 1.5, and the engine sizes the single
+leveraged or inverse fund that moves the whole book to that beta without selling a share of the tax-sensitive core,
+reporting the margin consumed, the annual carry and the capital-gains tax the alternative of selling stock would have
+realised. A daily simulator replays any signal with fund compounding, fees, interest and costs.
+
+### 14.7 Fast
+The window appears in about 1.5 seconds instead of six: the solvers are imported lazily and warmed up in the
+background, the settings loader lost its pydantic dependency, screens are constructed on first visit, and charts update
+through `Plotly.react` instead of reloading a four-megabyte script per figure. The test suite grew to 231 tests.

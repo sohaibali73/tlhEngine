@@ -1,7 +1,7 @@
-"""Barra-style multi-factor equity risk model.
+"""Barra-style multi-factor equity risk model and the model library.
 
-Fit pipeline
-------------
+Fit pipeline (barra_lite)
+-------------------------
 1. Daily total returns for the fit universe over `lookback_days`.
 2. Exposures rebuilt every `exposure_refresh_days` trading days (held constant in between).
 3. Per day: weighted cross-sectional regression r_t = X_t f_t + u_t with sqrt(cap) weights and the Barra
@@ -10,8 +10,15 @@ Fit pipeline
 5. Specific variance: EWMA of squared residuals, shrunk toward the cross-sectional median; annualised.
 6. Names without fundamental/sector exposures (ETFs, funds) get exposures by ridge regression of their returns on
    the factor returns; their residual variance becomes specific variance.
-7. Optional macro block: time-series betas of every asset to macro shocks (rates, slope, credit, USD); macro
-   factor covariance from the shocks. Off by default.
+7. Optional macro block: time-series betas of every asset to macro shocks (rates, slope, credit, USD).
+
+Other estimators share the same `FittedRiskModel` output (see `RiskModelSpec.model_kind`):
+    erm          full equity risk model (risk/erm.py)
+    hybrid       ERM + statistical factors on the residuals (risk/statistical.py)
+    statistical  Potomac calibrated covariance (lookback / weighting / Ledoit-Wolf) in eigen-factor form
+    pca          asymptotic principal components
+and any fundamental model can carry a dynamic factor covariance (`cov_method`: ewma | garch | regime).
+`RISK_MODEL_PRESETS` is the model library shown in the GUI and to YANG.
 
 This module is AI-editable (ai/registry.py). Keep `FittedRiskModel`'s public surface stable: the optimizer and
 GUI depend on `exposures`, `factor_cov`, `specific_var`, `covariance()`, `tracking_error()`, `te_decomposition()`.
@@ -19,7 +26,7 @@ GUI depend on `exposures`, `factor_cov`, `specific_var`, `covariance()`, `tracki
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 from pathlib import Path
 
@@ -29,6 +36,9 @@ import pandas as pd
 from .factors import STYLE_DEFINITIONS, ExposureBuild, FactorInputs, build_exposures
 
 TRADING_DAYS = 252
+
+MODEL_KINDS = ("barra_lite", "erm", "hybrid", "statistical", "pca")
+COV_METHODS = ("ewma", "garch", "regime")
 
 
 @dataclass
@@ -46,8 +56,8 @@ class RiskModelSpec:
     min_obs_per_symbol: int = 120
     ridge_lambda: float = 0.05
     winsor_returns: float = 0.25      # clip daily returns at +/-25% in the regression
-    # ---- equity risk model (ERM) options; used when model_kind == "erm"
-    model_kind: str = "barra_lite"    # barra_lite | erm
+    # ---- equity risk model (ERM) options; used when model_kind in (erm, hybrid)
+    model_kind: str = "barra_lite"    # barra_lite | erm | hybrid | statistical | pca
     industry_level: str = "gics_industry_group"
     robust: bool = False
     weight_cap_pct: float = 95.0
@@ -57,12 +67,96 @@ class RiskModelSpec:
     eigen_adjust: bool = True
     vra: bool = True
     specific_hl: int = 84
+    # ---- statistical / PCA options (model_kind statistical | pca) and hybrid extension
+    stat_lookback: int = 126
+    stat_weighting: str = "equal"     # equal | exponential (half-life = 0.35 x lookback)
+    stat_estimator: str = "ledoit_wolf"   # sample | ledoit_wolf
+    stat_factors: int | None = None   # PCA components / eigen factors (None = automatic)
+    hybrid_stat_factors: int = 5
+    # ---- dynamic factor covariance for fundamental models
+    cov_method: str = "ewma"          # ewma | garch | regime
+    horizon_days: int = 21
+    preset: str = ""
 
     def factor_names(self, sector_cols: list[str]) -> list[str]:
         cols = ["market"] + list(self.styles) + list(sector_cols)
         if self.use_macro:
             cols += [f"macro:{c}" for c in self.macro_columns]
         return cols
+
+    @property
+    def is_fundamental(self) -> bool:
+        return self.model_kind in ("barra_lite", "erm", "hybrid")
+
+
+# ====================================================================================== model library
+RISK_MODEL_PRESETS: dict[str, dict] = {
+    "ERM · Standard": {
+        "description": "Full equity risk model in the Barra USE4 tradition: 10 multi-descriptor styles, GICS industry groups, Newey-West, "
+                       "eigenfactor and volatility-regime adjustments, Bayesian-shrunk specific risk. The default for harvesting and baskets.",
+        "spec": dict(name="erm", model_kind="erm")},
+    "ERM · Short horizon (1 month)": {
+        "description": "Same factor structure with fast half-lives (vol 21d, corr 126d, specific 42d) for a one-month decision horizon: "
+                       "reacts to regime changes quickly at the cost of noisier levels.",
+        "spec": dict(name="erm_short", model_kind="erm", hl_vol=21, hl_corr=126, specific_hl=42, horizon_days=21)},
+    "ERM · Long horizon (6 months)": {
+        "description": "Slow half-lives (vol 252d, corr 756d, specific 252d) over a four-year window for strategic tracking-error budgets "
+                       "and multi-year glide paths.",
+        "spec": dict(name="erm_long", model_kind="erm", lookback_days=1008, hl_vol=252, hl_corr=756, specific_hl=252, horizon_days=126)},
+    "ERM · Robust (Huber)": {
+        "description": "ERM with Huber M-estimation of the daily cross-sections so single-name blow-ups and data errors do not drive factor returns.",
+        "spec": dict(name="erm_robust", model_kind="erm", robust=True)},
+    "ERM · GARCH-dynamic covariance": {
+        "description": "ERM exposures and factor returns; factor variances forecast by GARCH(1,1) over the decision horizon and combined with "
+                       "EWMA correlations. Sharper after volatility shocks than a fixed half-life.",
+        "spec": dict(name="erm_garch", model_kind="erm", cov_method="garch", horizon_days=21)},
+    "ERM · Regime-conditional covariance": {
+        "description": "Two-state (calm/stress) factor covariance blended by the current probability of stress from market volatility. "
+                       "Conservative when the tape is fragile.",
+        "spec": dict(name="erm_regime", model_kind="erm", cov_method="regime")},
+    "Hybrid · ERM + statistical factors": {
+        "description": "ERM plus five principal components extracted from its residual returns, capturing co-movement the descriptors miss "
+                       "(themes, crowded trades). Lower specific risk, more explained variance.",
+        "spec": dict(name="hybrid", model_kind="hybrid", hybrid_stat_factors=5)},
+    "Potomac Calibrated · 126d equal Ledoit-Wolf": {
+        "description": "The 2026 calibration study's winner for 3- and 6-month horizons: 126-day window, equal weights, Ledoit-Wolf "
+                       "constant-correlation shrinkage. Best composite forecast of basket tracking error out of sample.",
+        "spec": dict(name="calibrated_126_lw", model_kind="statistical", stat_lookback=126, stat_weighting="equal", stat_estimator="ledoit_wolf", horizon_days=126)},
+    "Potomac Calibrated · 189d exponential Ledoit-Wolf (1 month)": {
+        "description": "Calibration winner at the one-month horizon: 189-day window, exponential weights (half-life 66d), Ledoit-Wolf. Ranks "
+                       "risk fastest after a regime change.",
+        "spec": dict(name="calibrated_189_exp_lw", model_kind="statistical", stat_lookback=189, stat_weighting="exponential", stat_estimator="ledoit_wolf", horizon_days=21)},
+    "Tight-pair · 126d sample covariance": {
+        "description": "Unshrunk sample covariance for substitute-pair tracking error (IVV vs SPY): shrinkage drags a 0.997 correlation toward "
+                       "the universe average and triples the forecast TE of near-identical pairs.",
+        "spec": dict(name="pair_sample_126", model_kind="statistical", stat_lookback=126, stat_weighting="equal", stat_estimator="sample")},
+    "Statistical · PCA (auto factors)": {
+        "description": "Asymptotic principal components on one year of exponentially weighted returns; the number of factors is chosen by the "
+                       "eigenvalue-ratio test. No fundamentals needed, so it covers every asset with a price history.",
+        "spec": dict(name="pca", model_kind="pca", stat_lookback=252, stat_weighting="exponential", stat_factors=None)},
+    "barra_lite · Fast six-style": {
+        "description": "Market, six styles and GICS sectors with EWMA covariance; fits ~640 names in about three seconds. Good for quick "
+                       "what-ifs and the walk-forward backtester.",
+        "spec": dict(name="barra_lite", model_kind="barra_lite")},
+    "barra_lite · with macro block": {
+        "description": "barra_lite plus time-series betas to rates, curve slope, credit spreads and the dollar, for macro stress tests.",
+        "spec": dict(name="barra_lite_macro", model_kind="barra_lite", use_macro=True)},
+}
+
+
+def preset_spec(name: str, **overrides) -> RiskModelSpec:
+    if name not in RISK_MODEL_PRESETS:
+        raise KeyError(f"unknown risk-model preset '{name}'; choose from {list(RISK_MODEL_PRESETS)}")
+    kw = dict(RISK_MODEL_PRESETS[name]["spec"])
+    kw.update(overrides)
+    kw.setdefault("preset", name)
+    return RiskModelSpec(**kw)
+
+
+def preset_table() -> pd.DataFrame:
+    rows = [{"preset": k, "model_kind": v["spec"].get("model_kind", "barra_lite"), "cov_method": v["spec"].get("cov_method", "ewma"),
+             "description": v["description"]} for k, v in RISK_MODEL_PRESETS.items()]
+    return pd.DataFrame(rows)
 
 
 @dataclass
@@ -138,6 +232,10 @@ class FittedRiskModel:
     def factor_vols(self) -> pd.Series:
         return pd.Series(np.sqrt(np.diag(self.factor_cov.values)), index=self.factors)
 
+    @property
+    def kind(self) -> str:
+        return self.diagnostics.get("model_kind", self.spec.model_kind)
+
     # ------------------------------------------------------------------ persistence
     def save(self, folder: Path) -> Path:
         folder = Path(folder)
@@ -186,8 +284,69 @@ class FactorRiskModel:
         prices = prices.sort_index()
         if as_of is not None:
             prices = prices.loc[: pd.Timestamp(as_of)]
-        if spec.model_kind == "erm":
-            return self._fit_erm(prices, securities, fundamentals, volume, universe_name, snapshot_id, say)
+        if spec.model_kind not in MODEL_KINDS:
+            raise ValueError(f"unknown model_kind {spec.model_kind}; choose from {MODEL_KINDS}")
+        if spec.model_kind in ("statistical", "pca"):
+            out = self._fit_statistical(prices, say)
+            return self._finalise(out, spec, universe_name, snapshot_id, say)
+        if spec.model_kind in ("erm", "hybrid"):
+            out = self._fit_erm(prices, securities, fundamentals, volume, say)
+            return self._finalise(out, spec, universe_name, snapshot_id, say)
+        out = self._fit_barra_lite(prices, securities, fundamentals, macro_levels, say)
+        return self._finalise(out, spec, universe_name, snapshot_id, say)
+
+    # ------------------------------------------------------------------ shared post-processing
+    def _finalise(self, out: dict, spec: RiskModelSpec, universe_name: str, snapshot_id: str | None, say) -> FittedRiskModel:
+        X, F, D, FR, diag = out["exposures"], out["factor_cov"], out["specific_var"], out["factor_returns"], dict(out["diagnostics"])
+        style_cols = list(out.get("style_cols", spec.styles))
+        if spec.model_kind == "hybrid":
+            from .statistical import add_statistical_factors
+            say("Extracting statistical factors from residuals…")
+            U = out.get("residuals")
+            if U is not None:
+                X, F, D, FR, info = add_statistical_factors(X, F, D, FR, U, spec.hybrid_stat_factors or None, halflife=spec.hl_corr // 4 or 126)
+                diag.update(info)
+                diag["model_kind"] = "hybrid"
+        if spec.is_fundamental and spec.cov_method in ("garch", "regime"):
+            from .statistical import garch_factor_cov, regime_factor_cov
+            say(f"Dynamic factor covariance ({spec.cov_method})…")
+            fr = FR.reindex(columns=F.columns).dropna(how="all")
+            F_dyn, info = garch_factor_cov(fr, spec.horizon_days, spec.hl_corr) if spec.cov_method == "garch" else regime_factor_cov(fr)
+            # keep the eigen/VRA-adjusted level from the base fit: rescale the dynamic matrix to the base total factor variance ratio
+            diag["cov_method"] = spec.cov_method
+            diag.update(info)
+            diag["dynamic_vs_base_vol_ratio"] = float(np.sqrt(np.trace(F_dyn.values) / max(np.trace(F.values), 1e-18)))
+            F = F_dyn
+        diag.setdefault("model_kind", spec.model_kind)
+        if spec.preset:
+            diag["preset"] = spec.preset
+        diag["factor_vol_annual"] = {str(k): float(v) for k, v in zip(F.columns, np.sqrt(np.maximum(np.diag(F.values), 0.0)), strict=True)}
+        fitted_spec = replace(spec, styles=style_cols) if spec.model_kind in ("erm", "hybrid") else spec
+        return FittedRiskModel(spec=fitted_spec, as_of=out["as_of"], exposures=X, factor_cov=F, specific_var=D, factor_returns=FR,
+                               diagnostics=diag, universe_name=universe_name, snapshot_id=snapshot_id)
+
+    # ------------------------------------------------------------------ estimators
+    def _fit_statistical(self, prices: pd.DataFrame, say) -> dict:
+        from .statistical import StatOptions, fit_calibrated, fit_pca
+        spec = self.spec
+        opts = StatOptions(lookback=spec.stat_lookback, weighting=spec.stat_weighting, estimator=spec.stat_estimator,
+                           n_factors=spec.stat_factors, min_obs=min(spec.min_obs_per_symbol, max(spec.stat_lookback - 5, 20)))
+        return fit_pca(prices, opts, say) if spec.model_kind == "pca" else fit_calibrated(prices, opts, say)
+
+    def _fit_erm(self, prices, securities, fundamentals, volume, say) -> dict:
+        from .erm import ERMOptions, fit_erm
+        spec = self.spec
+        opts = ERMOptions(industry_level=spec.industry_level, styles=list(spec.styles), robust=spec.robust,
+                          weight_cap_pct=spec.weight_cap_pct, nw_lags=spec.nw_lags, hl_vol=spec.hl_vol, hl_corr=spec.hl_corr,
+                          eigen_adjust=spec.eigen_adjust, vra=spec.vra, specific_hl=spec.specific_hl, min_obs=spec.min_obs_per_symbol)
+        out = fit_erm(prices, securities.reindex(prices.columns), fundamentals.reindex(prices.columns), volume,
+                      spec.lookback_days, spec.exposure_refresh_days, opts, progress=say)
+        out["diagnostics"] = dict(out["diagnostics"])
+        out["diagnostics"].setdefault("model_kind", "erm")
+        return out
+
+    def _fit_barra_lite(self, prices, securities, fundamentals, macro_levels, say) -> dict:
+        spec = self.spec
         prices = prices.dropna(axis=1, thresh=spec.min_obs_per_symbol)
         securities = securities.reindex(prices.columns)
         fundamentals = fundamentals.reindex(prices.columns)
@@ -285,35 +444,17 @@ class FactorRiskModel:
                 F_ret = pd.concat([F_ret, pd.DataFrame(M, index=common, columns=mcols)], axis=1)
 
         diagnostics = {
+            "model_kind": "barra_lite",
             "n_dates": int(len(F_ret)), "n_symbols": int(len(X_end)), "n_filled_by_regression": filled,
             "avg_r2": float(np.mean(r2s)) if r2s else None,
             "fit_start": str(F_ret.index.min().date()), "fit_end": str(F_ret.index.max().date()),
-            "factor_vol_annual": {str(k): float(v) for k, v in
-                                  zip(factor_cov.columns, np.sqrt(np.diag(factor_cov.values)), strict=True)},
             "median_specific_vol": float(np.sqrt(np.nanmedian(spec_var.values))),
             "styles": list(spec.styles), "sectors": sector_cols, "use_macro": bool(spec.use_macro),
             "style_descriptions": {s: STYLE_DEFINITIONS[s].description for s in spec.styles if s in STYLE_DEFINITIONS},
         }
         say("Risk model fit complete.")
-        return FittedRiskModel(spec=spec, as_of=t_end.date(), exposures=X_end, factor_cov=factor_cov,
-                               specific_var=spec_var, factor_returns=F_ret, diagnostics=diagnostics,
-                               universe_name=universe_name, snapshot_id=snapshot_id)
-
-
-    def _fit_erm(self, prices, securities, fundamentals, volume, universe_name, snapshot_id, say) -> FittedRiskModel:
-        from dataclasses import replace
-
-        from .erm import ERMOptions, fit_erm
-        spec = self.spec
-        opts = ERMOptions(industry_level=spec.industry_level, styles=list(spec.styles), robust=spec.robust,
-                          weight_cap_pct=spec.weight_cap_pct, nw_lags=spec.nw_lags, hl_vol=spec.hl_vol, hl_corr=spec.hl_corr,
-                          eigen_adjust=spec.eigen_adjust, vra=spec.vra, specific_hl=spec.specific_hl, min_obs=spec.min_obs_per_symbol)
-        out = fit_erm(prices, securities.reindex(prices.columns), fundamentals.reindex(prices.columns), volume,
-                      spec.lookback_days, spec.exposure_refresh_days, opts, progress=say)
-        fitted_spec = replace(spec, styles=list(out["style_cols"]), use_sectors=True)
-        return FittedRiskModel(spec=fitted_spec, as_of=out["as_of"], exposures=out["exposures"], factor_cov=out["factor_cov"],
-                               specific_var=out["specific_var"], factor_returns=out["factor_returns"], diagnostics=out["diagnostics"],
-                               universe_name=universe_name, snapshot_id=snapshot_id)
+        return {"exposures": X_end, "factor_cov": factor_cov, "specific_var": spec_var, "factor_returns": F_ret, "diagnostics": diagnostics,
+                "as_of": t_end.date(), "style_cols": list(spec.styles), "residuals": U}
 
 
 # ====================================================================================== numerics

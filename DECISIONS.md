@@ -215,3 +215,91 @@ Change a decision here first, then in code.
   one-file because QtWebEngine and its helper processes are fragile and slow to unpack in one-file mode. In a frozen
   build `REPO_ROOT` is the exe folder (so `.env` and `var/` travel with the app) and read-only resources resolve from
   `sys._MEIPASS`. The code sandbox requires the source tree and reports that clearly when frozen.
+
+## D17. Startup and chart performance (added 2026-09-03)
+- Heavy solvers are imported lazily (`tlh/lazy.py`: `cp = lazy_module("cvxpy")`, `norm = lazy_object("scipy.stats", "norm")`) and
+  warmed up in a background thread after the window is shown. `pydantic-settings` was replaced by a dependency-free `.env`
+  loader with the same `Settings` surface. Import of `tlh.gui.app` fell from ~5 s to ~1 s.
+- Screens are built on first access (`gui/lazy_tabs.ScreenRegistry`): placeholders are added to the tab bar, the real widget
+  is constructed when the tab is opened or when code touches `win.screens[name]`; unbuilt screens are marked dirty and
+  refresh themselves when first built. A splash appears before the heavy imports.
+- `PlotlyView` loads one HTML shell per view and then pushes figure JSON through `Plotly.react`, so chart updates no longer
+  re-parse plotly.min.js or hit the `setHtml` 2 MB limit. Figures requested before the shell is ready are queued.
+- The Norgate status is polled every 10 s; the red banner clears itself and a stale snapshot is pulled when NDU comes up.
+
+## D18. Model library, statistical and dynamic risk models, calibration (added 2026-09-03)
+- `RiskModelSpec.model_kind` gained `statistical` (Potomac calibrated covariance: fixed window, equal/exponential weights with
+  half-life = 0.35 x window, sample or Ledoit-Wolf constant-correlation shrinkage), `pca` (asymptotic PCA, Ahn-Horenstein factor
+  count) and `hybrid` (ERM + PCA on its residuals). Statistical covariances are carried as eigen-factor models (`stat:k`
+  factors, unit factor variance, floored specific variance) so every consumer is unchanged.
+- `cov_method` (`ewma | garch | regime`) post-processes the factor covariance of fundamental models: GARCH(1,1) per factor
+  (variance-targeted MLE) with EWMA correlations for a decision horizon, or a calm/stress mixture weighted by the logistic
+  probability of stress from the market-vol z-score.
+- `RISK_MODEL_PRESETS` (13 named models) is the library the GUI and YANG use; `preset` is recorded in the spec and
+  diagnostics. Model version names default to the preset name.
+- `risk/calibration.py` ports the September 2026 calibration study (Risk_Model_Calibration v1.3): non-overlapping forward
+  windows anchored to the longest lookback, 20 seeded 5-name baskets against the equal-weight universe, sampled pairs, the
+  seven metrics and the within-horizon mean-rank Score. Extensions: optional PCA arm, the client's holdings as an extra
+  basket, and `pair_study` for tight substitute pairs. The study's conclusions are encoded as presets (126d equal
+  Ledoit-Wolf for 3–6 month horizons; sample matrix for near-identical pairs).
+
+## D19. Advisor-grade onboarding and state taxes (added 2026-09-03)
+- A `Start here` screen and `services/home_service.py` implement the three-step flow (import holdings -> set taxes -> one
+  click harvest) with plain-English sentences generated in `tlh/explain.py` from the engine's numbers. `ui_mode`
+  (`simple` hides Risk lab, Strategy lab, Builder, Agent, Export; `expert` shows all) is persisted per user.
+- `tax/state_rates.yaml` holds all 50 states + DC (approximate 2026 planning figures, flagged everywhere): treatment
+  (ordinary / none / exclusion / flat capital-gains rate / Washington excise), simplified brackets, investment-income
+  surtaxes and local-tax notes. `combined_marginal` stacks federal brackets, NIIT and the state rule; `set_tax_setup`
+  derives the default TaxProfile and syncs the concentration bracket schedule.
+- Holdings import (`services/import_service.py`) maps broker headers by alias, tolerates title blocks and cash rows, and
+  records every row through the normal ledger path; missing dates default to 400 days ago and are flagged, missing costs
+  fall back to the current price and are flagged.
+
+## D20. Long/short extensions, overlay and sample library (added 2026-09-03)
+- Strategies added: `multi_factor` (integrated composite vs mixed sleeves, sector-neutral scores), `defensive_equity`
+  (covariance-implied beta cap), `quality_momentum`, `long_short_extension` (130/30-style) and `overlay_neutral`
+  (market-neutral extension around fixed holdings). Long/short books are solved with disjoint tranches: the bottom 40%
+  by composite score is short-eligible, the rest long-eligible, so a name is never long and short at once; if the
+  neutrality constraints are infeasible the tranche widens (50%, 60%) and then neutrality is relaxed with the status
+  saying so. Betas come from the covariance (`_betas`), never from the Barra `market` intercept column.
+- `BasketRepo.save` stores signed weights when a basket has shorts (net = 1) and keeps long-only baskets normalised.
+- `optim/longshort.py` reproduces the long/short TLH economics from first principles (Monte Carlo of loss generation with
+  wash lockouts, financing, tax-neutral Exchange glide) and carries the published Quantinno reference profiles as data for
+  comparison only. `optim/overlay.py` sizes index-futures overlays with §1256 and §1092 flags; both are decision support
+  and state that shorting/futures need custodian capability and tax counsel.
+- `optim/basket_library.py` is the 17-recipe sample library built through `StrategyService.build`; recipes are data so
+  YANG can add them.
+
+## D21. Levered beta without futures, margin policy, tactical overlay (added 2026-09-03)
+- Futures are not available on the advisor custody platforms and direct shorting is not permitted (broker notes, Aug 2026),
+  so leverage comes from leveraged / inverse ETFs (`optim/leverage.INSTRUMENTS`: SSO, SPUU, UPRO, SPXL, SH, SDS, SPXU,
+  SPXS and the Nasdaq-100 set) and, optionally, Reg-T margin. These symbols are always added to the fit universe so the
+  risk model carries them (their beta is covariance-implied, about 2 or 3, never assumed).
+- `levered_beta` strategy: stocks + leveraged ETFs + loan `m`, minimising tracking variance versus `target_beta x benchmark`
+  plus a cost term (ETF expense + volatility drag `(k^2-k)/2 sigma^2` + margin interest), subject to beta = target,
+  Reg-T initial margin (loan <= 50% of long value), a house maintenance requirement of 30% on stocks and 30% x |k| on
+  leveraged funds with a 25% equity buffer, per-stock and per-ETF caps and a sector band on the stock sleeve. Weights are
+  fractions of equity summing to 1 + loan; `margin_max = 0` gives a cash-only book. Margin report includes the market
+  drop that triggers a call.
+- Tracking error first (2026-09-03, second pass). The model is built against the *index* benchmark even when the house
+  benchmark is a saved basket (a levered basket set as benchmark had made the model track itself), and leveraged funds
+  never count as benchmark members. Default `replicate=True`: every index name is held at 1.5 x its weight (no name
+  cap, no minimum weight, the stock cap is raised to clear the largest index weight), so the stock sleeve tracks exactly
+  and the only tracking error comes from the leverage layer. Leveraged funds are modelled as k x the *benchmark basket*
+  (not k x SPY's fitted row, whose idiosyncratic term made them look risky and pushed the solver into margin) plus each
+  fund's measured tracking variance versus k x SPY. Minimum-weight pruning re-solves with the pruned names fixed at zero
+  (pro-rata re-scaling had destroyed both TE and beta). The cost term now includes the fund's embedded financing
+  (k-1)(rf + swap spread) so leveraged ETFs and a margin loan are compared on the same footing; `cost_weight` defaults to
+  0.1 (TE first). The QP objective is `||F'(w - beta_T wb)||^2` with `S = FF'` (SOC form; CLARABEL solves the 506-name
+  problem in about 0.4 s). Diagnostics carry a realised check with actual ETF histories: the "structure" numbers replace
+  the stock sleeve by the index ETF (what leverage, fees and interest add: about 0.3% a year at monthly rebalancing on
+  live data), the full-book numbers are labelled look-ahead because today's index weights favour past winners.
+- Tactical overlay: a signal (Potomac strategy CSV, manual beta, example rules, or a blend) gives a target beta in
+  [0, 1.5]; `tactical_overlay` sizes one leveraged (up) or inverse (down) ETF that moves the *total* beta to the target
+  without selling core stock, picking the cheapest instrument that fits the margin policy and reporting the tax that
+  selling core instead would have realised. `simulate_tactical` backtests the signal day by day with leveraged-fund
+  compounding, expense ratios, margin interest and costs. Example rules are labelled as not Potomac's models; the CSV /
+  blend path is the integration point for the real strategies. Signals persist as Parquet under var/tactical.
+- Snapshot frames (raw parquet, close matrices, last prices) are cached in memory per snapshot path and mtime
+  (`data/cache._FRAME_CACHE`); snapshots are immutable so hits are safe. This removed the 1-2 s pivot from every fit,
+  harvest, KPI refresh and strategy build.

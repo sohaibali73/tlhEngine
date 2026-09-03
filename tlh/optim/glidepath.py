@@ -21,12 +21,13 @@ import logging
 import warnings
 from dataclasses import dataclass, field
 
-import cvxpy as cp
 import numpy as np
 import pandas as pd
 
+from ..lazy import lazy_module
 from ..tax.concentration import BracketSchedule, convex_pieces, ltcg_tax, ordinary_tax, tax_from_pieces
 
+cp = lazy_module("cvxpy")          # imported on first use (saves ~1.7 s at launch)
 log = logging.getLogger(__name__)
 
 

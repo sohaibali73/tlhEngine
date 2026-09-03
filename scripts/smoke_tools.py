@@ -76,4 +76,34 @@ call("list_editable_modules")
 call("read_module", path="tlh/risk/custom/__init__.py")
 call("set_benchmark", benchmark="S&P 500")
 call("run_frontier", te_grid=[0.01, 0.03])
+# ---- flagship additions
+call("risk_model_presets")
+call("state_tax_rates", state="CA", filing_status="mfj", other_income=400000, gain=50000)
+call("state_tax_rates")
+call("set_tax_setup", state="CA", filing_status="mfj", other_income=400000)
+call("build_sample_baskets", names=["Defensive Equity (45)", "Long/Short 130/30 Tax Engine"])
+call("longshort_analysis", extension=0.30, years=3, n_paths=20)
+call("exchange_glide", symbol=top, extension=0.30, years=6)
+call("overlay_plan", target_beta=1.0, contract="MES", cash=100000)
+call("pair_te_study", pairs=[["IVV", "SPY"], ["QQQ", "XLK"]], horizon_days=42)
+call("run_calibration_study", quick=True, lookbacks=[63, 126], horizons=[21])
+call("fit_risk_model", preset="Potomac Calibrated · 126d equal Ledoit-Wolf", name="smoke calibrated")
+import tempfile  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from tlh.services.import_service import template_csv  # noqa: E402
+
+tp = Path(tempfile.gettempdir()) / "tlh_import_smoke.csv"
+tp.write_text(template_csv(), encoding="utf-8")
+call("import_holdings", path=str(tp), dry_run=True)
+call("one_click_harvest")
+# ---- leverage / tactical
+call("leverage_instruments")
+call("tactical_signal", name="smoke trend", kind="rule:trend", beta_max=1.5, activate=True)
+call("tactical_signal", name="smoke manual", kind="manual", manual_beta=1.5)
+call("list_tactical_signals")
+call("tactical_overlay")
+call("tactical_overlay", target_beta=0.0)
+call("tactical_backtest", start="2022-01-01")
+call("build_strategy_basket", name="S:levered_beta", strategy="levered_beta", params={"target_beta": 1.5, "n_max": 50, "margin_max": 0.5}, description="smoke")
 print(f"\n{len(TOOLS)} tools defined; failures: {failures if failures else 'none'}")

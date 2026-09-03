@@ -101,6 +101,30 @@ class BasketService:
         bench, _ = self._bench(snap, model, benchmark_name or b.get("benchmark_name"))
         return analyze_basket(model, b["weights"], bench)
 
+    # ------------------------------------------------------------------ sample library
+    def build_library(self, names: list[str] | None = None, audience: str | None = None, benchmark_name: str | None = None,
+                      prefix: str = "Sample · ", progress=None) -> pd.DataFrame:
+        """Build the sample model-portfolio library (optim/basket_library.py) against the live snapshot and active model."""
+        from ..optim.basket_library import recipes
+        from .strategy_service import StrategyService, spec_from_params
+        say = progress or (lambda m: None)
+        svc = StrategyService(self.ctx)
+        rows = []
+        todo = [r for r in recipes(audience) if not names or r.name in set(names)]
+        for i, r in enumerate(todo, 1):
+            say(f"Building {r.name} ({i}/{len(todo)})…")
+            try:
+                spec = spec_from_params(r.kind, r.params)
+                out = svc.build(prefix + r.name, spec, benchmark_name or r.benchmark, description=r.pitch, cov_source=r.cov_source, source="library")
+                d = out.get("diagnostics", {})
+                rows.append({"name": prefix + r.name, "strategy": r.kind, "audience": r.audience, "status": out.get("status"),
+                             "n_names": out.get("n_names"), "tracking_error": out.get("tracking_error_model") or d.get("tracking_error"),
+                             "volatility": d.get("volatility"), "gross": d.get("gross"), "beta": d.get("beta"), "pitch": r.pitch})
+            except Exception as e:  # keep going through the library
+                log.warning("library basket %s failed: %s", r.name, e)
+                rows.append({"name": prefix + r.name, "strategy": r.kind, "audience": r.audience, "status": f"failed: {str(e)[:140]}", "pitch": r.pitch})
+        return pd.DataFrame(rows)
+
     def _summary(self, name: str, res, bname: str, unknown: list[str] | None = None) -> dict:
         exp = res.exposures
         return {

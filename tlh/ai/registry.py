@@ -67,12 +67,38 @@ AI_EDITABLE: dict[str, EditableModule] = {
         "tlh/data/substitutes.yaml",
         "Substantially-identical groups and wash-safe substitute candidates.",
         ["tests/test_substitutes.py"], kind="yaml", reload_hint="Substitute map reloads immediately on promotion."),
+    "tlh/risk/statistical.py": EditableModule(
+        "tlh/risk/statistical.py",
+        "Statistical risk models (calibrated covariance, Ledoit-Wolf, PCA, hybrid residual factors) and dynamic covariance (GARCH, regime).",
+        ["tests/test_statistical.py"], reload_hint="Refit a statistical / dynamic model after promotion."),
+    "tlh/risk/calibration.py": EditableModule(
+        "tlh/risk/calibration.py", "Walk-forward calibration study (lookback x weighting x estimator x horizon) and substitute-pair TE study.",
+        ["tests/test_statistical.py"]),
+    "tlh/optim/basket_library.py": EditableModule(
+        "tlh/optim/basket_library.py", "Sample model-portfolio recipes (name, strategy, params, pitch). Add a recipe = one BasketRecipe entry.",
+        ["tests/test_flagship.py"]),
+    "tlh/optim/longshort.py": EditableModule(
+        "tlh/optim/longshort.py", "Long/short TLH economics: loss-generation Monte Carlo, financing, tax-neutral Exchange glide.",
+        ["tests/test_flagship.py"]),
+    "tlh/optim/overlay.py": EditableModule(
+        "tlh/optim/overlay.py", "Index-futures beta overlay sizing, margin, carry, §1256 / §1092 flags.",
+        ["tests/test_flagship.py"]),
+    "tlh/optim/leverage.py": EditableModule(
+        "tlh/optim/leverage.py", "Levered-beta construction (leveraged ETFs + Reg-T margin, no futures), margin policy, tactical overlay sizing, daily simulator.",
+        ["tests/test_leverage.py"]),
+    "tlh/optim/tactical.py": EditableModule(
+        "tlh/optim/tactical.py", "Tactical signal sources (manual, Potomac CSV, example rules, blends) that produce a target-beta series.",
+        ["tests/test_leverage.py"], reload_hint="Re-save signals after promotion."),
+    "tlh/tax/state_rates.yaml": EditableModule(
+        "tlh/tax/state_rates.yaml", "State capital-gains tax treatment table (51 jurisdictions, approximate planning figures).",
+        ["tests/test_flagship.py"], kind="yaml", reload_hint="Restart or re-open the Tax rates screen to reload."),
 }
 
 READ_ONLY: list[str] = [
-    "tlh/tax/washsale.py", "tlh/tax/ledger.py", "tlh/tax/lots.py", "tlh/tax/holding.py", "tlh/tax/rates.py",
+    "tlh/tax/washsale.py", "tlh/tax/ledger.py", "tlh/tax/lots.py", "tlh/tax/holding.py", "tlh/tax/rates.py", "tlh/tax/state_rates.py",
     "tlh/risk/benchmark.py", "tlh/data/norgate.py", "tlh/data/cache.py", "tlh/data/substitutes.py",
-    "tlh/services/harvest_service.py", "tlh/services/risk_service.py", "DECISIONS.md", "CLAUDE.md",
+    "tlh/services/harvest_service.py", "tlh/services/risk_service.py", "tlh/services/home_service.py", "tlh/services/import_service.py",
+    "tlh/explain.py", "DECISIONS.md", "CLAUDE.md",
 ]
 
 NEW_FILE_PREFIXES = ["tlh/risk/custom/"]   # the AI may create new modules here (tests required)

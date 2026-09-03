@@ -57,7 +57,40 @@ print("copilot transcript chars:", len(c.transcript.toPlainText()), "| available
 c._render_history()
 pump(0.5)
 print("history items:", len(c.transcript.items))
-for scr in win.screens.values():
+# ---- flagship screens
+home = win.screens["Home"]
+pump(3)
+print("home KPIs:", home.k_value.val.text(), "|", home.k_loss.val.text(), "|", home.k_tax.val.text(), "|", home.k_state.val.text())
+i = home.state.findData("CA")
+home.state.setCurrentIndex(i)
+home.filing.setCurrentText("mfj")
+home.income.setValue(400000)
+home._save_tax()
+pump(0.5)
+print("home tax sentence:", home.step2.text()[:140])
+tr = win.screens["Tax rates"]
+pump(3)
+print("tax rates rows:", tr.table.model.rowCount(), "| ST/LT:", tr.k_st.val.text(), tr.k_lt.val.text())
+rm = win.screens["Risk model"]
+print("presets in library combo:", rm.preset.count() - 1)
+rm.preset.setCurrentIndex(rm.preset.findData("Potomac Calibrated · 126d equal Ledoit-Wolf"))
+print("spec kind after preset:", rm.kind.currentText(), rm.stat_lookback.value(), rm.stat_estimator.currentText())
+rl = win.screens["Risk lab"]
+print("risk lab tabs:", [rl.tabs.tabText(i) for i in range(rl.tabs.count())])
+tac = win.screens["Tactical overlay"]
+pump(2)
+print("tactical signals:", tac.signals.model.rowCount(), "| instruments:", tac.inst.model.rowCount(), "| target today:", tac.k_target.val.text())
+tac.use_override.setChecked(True)
+tac.override.setValue(1.5)
+tac.recommend()
+pump(4)
+print("tactical ticket:", tac.k_ticket.val.text(), "|", tac.k_margin.val.text(), "|", tac.k_cost.val.text())
+print("ui mode:", win.ui_mode, "| visible tabs:", [win.tabs.tabText(i) for i in range(win.tabs.count()) if win.tabs.isTabVisible(i)])
+win.set_ui_mode("simple")
+print("simple-mode tabs:", [win.tabs.tabText(i) for i in range(win.tabs.count()) if win.tabs.isTabVisible(i)])
+win.set_ui_mode("expert")
+for name in win.screens.names():
+    scr = win.screens[name]
     tabs = getattr(scr, "tabs", None)
     if tabs is not None:
         for i in range(tabs.count()):

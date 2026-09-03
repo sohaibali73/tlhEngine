@@ -31,11 +31,23 @@ def world():
 
 def _valid(res, n_max, max_w):
     w = res.weights
-    assert abs(w.sum() - 1) < 1e-6
-    assert (w >= 0).all()
-    assert w.max() <= max_w + 1e-3
-    if n_max:
-        assert len(w) <= n_max
+    if res.diagnostics.get("levered"):
+        d = res.diagnostics
+        assert (w >= 0).all() and abs(w.sum() - (1 + d["loan"])) < 1e-6
+        assert d["margin"]["initial_margin_ok"] and d["margin"]["buffer_ok"]
+        assert abs(d["beta"] - d["target_beta"]) < 0.05
+    elif res.diagnostics.get("long_short"):
+        d = res.diagnostics
+        assert abs(w.sum() - 1) < 1e-3                                   # net = 1, signed weights
+        assert abs(d["long_exposure"] + d["short_exposure"] - 1) < 1e-3
+        assert d["short_exposure"] < -0.05
+        assert not (set(d["long_weights"]) & set(d["short_weights"]))
+    else:
+        assert abs(w.sum() - 1) < 1e-6
+        assert (w >= 0).all()
+        assert w.max() <= max_w + 1e-3
+        if n_max:
+            assert len(w) <= n_max
     assert np.isfinite(res.diagnostics["tracking_error"]) and np.isfinite(res.diagnostics["volatility"])
 
 

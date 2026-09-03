@@ -1,4 +1,5 @@
-"""Risk-model lifecycle: fit from a snapshot, persist as a versioned artifact, load the active model, compare."""
+"""Risk-model lifecycle: fit from a snapshot, persist as a versioned artifact, load the active model, compare,
+calibrate (which window / weighting / estimator forecasts best) and run the model library."""
 from __future__ import annotations
 
 import logging
@@ -9,7 +10,14 @@ import pandas as pd
 
 from ..data.cache import Snapshot
 from ..risk import benchmark as bm
-from ..risk.model import FactorRiskModel, FittedRiskModel, RiskModelSpec
+from ..risk.model import (
+    RISK_MODEL_PRESETS,
+    FactorRiskModel,
+    FittedRiskModel,
+    RiskModelSpec,
+    preset_spec,
+    preset_table,
+)
 from .context import AppContext
 
 log = logging.getLogger(__name__)
@@ -29,15 +37,16 @@ class RiskService:
         sec = snap.securities().set_index("symbol")
         fund = snap.fundamentals().set_index("symbol") if not snap.fundamentals().empty else pd.DataFrame(index=sec.index)
         macro = snap.macro() if spec.use_macro else None
-        volume = snap.close_matrix("volume") if spec.model_kind == "erm" else None
+        volume = snap.close_matrix("volume") if spec.model_kind in ("erm", "hybrid") else None
         model = FactorRiskModel(spec).fit(prices, sec, fund, macro_levels=macro, universe_name=snap.universe_name,
                                           snapshot_id=snap.id, progress=progress, volume=volume)
-        name = name or f"{spec.name} {model.as_of:%Y-%m-%d}"
+        label = spec.preset or spec.name or spec.model_kind
+        name = name or f"{label} {model.as_of:%Y-%m-%d}"
         code_ver = self.ctx.code.latest_version("tlh/risk/model.py")
         # Allocate the version row first so the artifact can be written straight into its final folder
         # (renaming a just-written folder on Windows can fail with "Access is denied" while handles settle).
         mid = self.ctx.models.create(name=name, snapshot_id=snap.id, as_of=model.as_of, universe_name=snap.universe_name,
-                                     lookback_days=spec.lookback_days, factor_list=model.factors,
+                                     lookback_days=spec.lookback_days if spec.is_fundamental else spec.stat_lookback, factor_list=model.factors,
                                      diagnostics=model.diagnostics, artifact_path="",
                                      code_version_id=code_ver["id"] if code_ver else None, notes=notes,
                                      make_active=make_active)
@@ -46,11 +55,35 @@ class RiskService:
         self.ctx.db.update("model_versions", "id = ?", (mid,), artifact_path=str(final))
         return mid, model
 
+    def fit_preset(self, snap: Snapshot, preset: str, make_active: bool = True, progress=None, **overrides) -> tuple[int, FittedRiskModel]:
+        return self.fit(snap, preset_spec(preset, **overrides), make_active=make_active, progress=progress)
+
+    def fit_library(self, snap: Snapshot, presets: list[str] | None = None, progress=None) -> pd.DataFrame:
+        """Fit several presets back to back (the active model is left unchanged) and return a comparison table."""
+        say = progress or (lambda m: None)
+        rows = []
+        for p in presets or list(RISK_MODEL_PRESETS):
+            try:
+                say(f"Fitting {p}…")
+                mid, m = self.fit(snap, preset_spec(p), make_active=False, progress=say)
+                d = m.diagnostics
+                rows.append({"preset": p, "model_id": mid, "kind": m.kind, "factors": len(m.factors), "symbols": len(m.symbols),
+                             "avg_r2": d.get("avg_r2"), "median_specific_vol": d.get("median_specific_vol"),
+                             "market_vol": float(m.factor_vols().get("market", float("nan"))) if "market" in m.factors else None, "status": "ok"})
+            except Exception as e:  # keep going through the library
+                log.warning("preset %s failed: %s", p, e)
+                rows.append({"preset": p, "model_id": None, "status": f"failed: {str(e)[:120]}"})
+        return pd.DataFrame(rows)
+
+    @staticmethod
+    def presets() -> pd.DataFrame:
+        return preset_table()
+
     def default_spec(self) -> RiskModelSpec:
         saved = self.ctx.get("risk_spec")
         if saved:
             try:
-                return RiskModelSpec(**saved)
+                return RiskModelSpec(**{k: v for k, v in saved.items() if k in RiskModelSpec.__dataclass_fields__})
             except TypeError:
                 pass
         return RiskModelSpec()
@@ -69,8 +102,14 @@ class RiskService:
         row = self.ctx.models.active()
         if not row:
             return None
+        cached = getattr(self, "_active_cache", None)
+        if cached and cached[0] == row["id"] and cached[2] == row.get("artifact_path"):
+            return cached[0], cached[1]
         m = self.load(row["id"])
-        return (row["id"], m) if m else None
+        if m is None:
+            return None
+        self._active_cache = (row["id"], m, row.get("artifact_path"))
+        return row["id"], m
 
     # ------------------------------------------------------------------ benchmark
     def benchmark_name(self) -> str:
@@ -111,7 +150,8 @@ class RiskService:
         df = pd.DataFrame({"portfolio": pe, "benchmark": be})
         df["active"] = df["portfolio"] - df["benchmark"]
         df["factor_vol"] = model.factor_vols()
-        df["kind"] = ["market" if f == "market" else "sector" if str(f).startswith(("sec:", "ind:")) else "macro" if str(f).startswith("macro:") else "style" for f in df.index]
+        df["kind"] = ["market" if f == "market" else "sector" if str(f).startswith(("sec:", "ind:")) else "macro" if str(f).startswith("macro:")
+                      else "statistical" if str(f).startswith("stat:") else "style" for f in df.index]
         return df
 
     # ------------------------------------------------------------------ analytics (Risk lab)
@@ -172,7 +212,7 @@ class RiskService:
         prices = snap.close_matrix("close")
         sec = snap.securities().set_index("symbol")
         fund = snap.fundamentals().set_index("symbol") if not snap.fundamentals().empty else pd.DataFrame(index=sec.index)
-        volume = snap.close_matrix("volume") if spec.model_kind == "erm" else None
+        volume = snap.close_matrix("volume") if spec.model_kind in ("erm", "hybrid") else None
         holdings = None
         eid = entity_id or self.ctx.current_entity_id
         act = self.active()
@@ -189,3 +229,68 @@ class RiskService:
         df = pd.DataFrame({f"vol_v{a_id}": va, f"vol_v{b_id}": vb})
         df["change"] = df.iloc[:, 1] - df.iloc[:, 0]
         return df
+
+    # ------------------------------------------------------------------ calibration study
+    def calibrate(self, quick: bool = True, include_pca: bool = False, include_holdings: bool = True, entity_id: int | None = None,
+                  lookbacks: tuple[int, ...] | None = None, horizons: tuple[int, ...] | None = None, progress=None) -> dict:
+        """Walk-forward calibration of lookback x weighting x estimator x horizon on the snapshot universe."""
+        from ..risk.calibration import CalibrationGrid, run_calibration
+        snap = self.data_snapshot()
+        if snap is None:
+            raise RuntimeError("no snapshot")
+        grid = CalibrationGrid.quick() if quick else CalibrationGrid()
+        if include_pca:
+            grid.estimators = tuple(list(grid.estimators) + ["pca"])
+        if lookbacks:
+            grid.lookbacks = tuple(lookbacks)
+        if horizons:
+            grid.horizons = tuple(horizons)
+        eid = entity_id or self.ctx.current_entity_id
+        if include_holdings and eid is not None:
+            from .portfolio_service import PortfolioService
+            lots = PortfolioService(self.ctx).lots_view(eid, snap=snap)
+            if not lots.empty:
+                grid.holdings = lots.groupby("symbol")["market_value"].sum()
+        prices = snap.close_matrix("close")
+        out = run_calibration(prices, grid, progress=progress)
+        out["snapshot_id"] = snap.id
+        self.ctx.set("last_calibration", {"recommendation": out["recommendation"], "snapshot_id": snap.id,
+                                          "winners": out["winners"][["Horizon", "Lookback", "Weighting", "Estimator", "Score", "TEBiasRatio", "TESpearman"]].to_dict("records")})
+        self.ctx.db.audit("user", "risk.calibrate", snap.id, quick=quick, scenarios=int(len(out["scoreboard"])))
+        return out
+
+    def pair_study(self, pairs: list[tuple[str, str]] | None = None, horizon: int = 63, progress=None) -> pd.DataFrame:
+        from ..risk.calibration import pair_study
+        snap = self.data_snapshot()
+        if snap is None:
+            raise RuntimeError("no snapshot")
+        prices = snap.close_matrix("close")
+        if not pairs:
+            pairs = self.default_pairs(list(prices.columns))
+        uni = [c for c in prices.columns if prices[c].notna().mean() > 0.95][:300]
+        return pair_study(prices, pairs, horizon=horizon, universe_for_shrinkage=uni, progress=progress)
+
+    def default_pairs(self, available: list[str]) -> list[tuple[str, str]]:
+        """Tight substitute pairs from the substitutes map (identical / presumed-identical tiers) present in the snapshot."""
+        pairs: list[tuple[str, str]] = []
+        try:
+            sm = self.ctx.substitutes
+            groups = [sorted(v) for v in list(sm.identical.values()) + list(sm.presumed.values()) if len(v) >= 2]
+        except Exception:
+            groups = []
+        avail = set(available)
+        for g in groups:
+            syms = [s for s in g if s in avail]
+            for i in range(len(syms) - 1):
+                pairs.append((syms[i], syms[i + 1]))
+        if not pairs:
+            for a, b in (("IVV", "SPY"), ("VOO", "SPY"), ("SCHX", "SPY"), ("QQQM", "QQQ"), ("VTI", "ITOT"), ("IWM", "VTWO")):
+                if a in avail and b in avail:
+                    pairs.append((a, b))
+        return pairs[:12]
+
+    @staticmethod
+    def spec_from_recommendation(rec: dict, **overrides) -> RiskModelSpec:
+        return RiskModelSpec(name=f"calibrated_{rec['lookback']}_{rec['weighting'][:3]}_{rec['estimator'][:2]}", model_kind="statistical",
+                             stat_lookback=int(rec["lookback"]), stat_weighting=rec["weighting"], stat_estimator=rec["estimator"],
+                             preset="Calibration study recommendation", **overrides)

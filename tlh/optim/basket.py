@@ -16,12 +16,13 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-import cvxpy as cp
 import numpy as np
 import pandas as pd
 
+from ..lazy import lazy_module
 from ..risk.model import FittedRiskModel
 
+cp = lazy_module("cvxpy")          # imported on first use (saves ~1.7 s at launch)
 log = logging.getLogger(__name__)
 
 

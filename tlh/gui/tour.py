@@ -37,6 +37,14 @@ class Step:
 
 def _steps() -> list[Step]:
     return [
+        Step("start", "0 · Start here (three clicks)", """
+**Start here** is the advisor view: **1** load holdings (import a broker CSV/Excel or use the demo), **2** pick the client's state,
+filing status and income (every state's capital-gains rule is built in), **3** press **Find my tax savings now**.
+
+You get plain-English sentences, the tax value in dollars, the tickets, and a wealth chart. Switch to **expert mode** (View menu)
+for the quant workbenches; the rest of this how-to walks through them.""",
+             "Home", lambda w: w.screens["Home"].go_btn, None, lambda w: w.ctx.get("tax_state", "") != "",
+             "Explain in plain English what this app does for an advisor and what the three steps are."),
         Step("data", "1 · Pull market data", """
 **What:** the engine works from an immutable Norgate *snapshot* (prices, GICS, fundamentals, macro, index membership).
 
@@ -58,6 +66,14 @@ For your own book: add an entity and accounts, then record buys or import a CSV 
 **How:** Risk model → **Fit model on latest snapshot** (about 3 s). Each fit is a versioned artifact; compare versions any time.""",
              "Risk model", lambda w: w.screens["Risk model"].fit_btn, lambda w: w.screens["Risk model"].fit(),
              lambda w: w.ctx.models.active() is not None, "Summarise the active risk model and what drives my tracking error."),
+        Step("library", "3b · Pick a model from the library, or calibrate one", """
+**Risk model › Model library** holds 13 presets: ERM standard / short / long horizon / robust / GARCH-dynamic / regime-conditional, hybrid
+ERM + statistical, Potomac calibrated covariances (126d equal Ledoit-Wolf; 189d exponential), tight-pair sample, PCA, barra_lite.
+
+**Risk lab › Calibration** re-runs the 2026 calibration study on your snapshot (lookback × weighting × estimator × horizon) and can
+fit the winner in one click; the substitute-pair study shows why near-identical ETF pairs need the unshrunk sample matrix.""",
+             "Risk model", lambda w: w.screens["Risk model"].preset, None,
+             lambda w: len(w.ctx.models.list()) >= 2, "Which risk model preset should I use for a 3-month harvest horizon, and why?"),
         Step("portfolio", "4 · Read the portfolio", """
 **Lots** shows every tax lot with unrealised P&L, ST/LT term, days to long-term and a **wash status**. Select a lot to read the plain-English wash-sale determination.
 
@@ -78,6 +94,15 @@ For your own book: add an entity and accounts, then record buys or import a CSV 
 **How:** Model portfolios → set name, max names, sector band, optional style tilts → **Build basket**. Then *Set as benchmark*.""",
              "Model portfolios", lambda w: w.screens["Model portfolios"].build_btn, None,
              lambda w: not w.ctx.baskets.list().empty, "Build a 40-name quality-tilted basket excluding my current holdings."),
+        Step("samples", "6a · Build the sample model portfolios", """
+**Model portfolios › Sample model portfolios** builds 17 ready-made recipes in one click: 50/100-name index trackers, integrated
+multi-factor (value + momentum + quality + low-vol), defensive equity with a beta cap, quality-momentum, min-variance, max-diversification,
+risk parity, HRP, value / low-vol / growth tilts, min-CVaR, Black-Litterman, and 130/30 and 145/45 long/short tax engines.
+
+Each is a normal saved basket: set one as the benchmark and harvest toward it.""",
+             "Model portfolios", lambda w: w.screens["Model portfolios"].lib_btn, lambda w: w.screens["Model portfolios"].build_library(),
+             lambda w: (not w.ctx.baskets.list().empty) and w.ctx.baskets.list()["name"].str.startswith("Sample").any(),
+             "Which sample model portfolio fits a retiree who wants equity exposure with a smaller drawdown, and why?"),
         Step("concentration", "6b · Plan around embedded gains", """
 **Concentration** shows how locked-in the book is (embedded gains, tax if liquidated, risk share, effective N) and plans the way out:
 a bracket-aware multi-year **glide path** that uses harvested losses and carryforwards, honours gain budgets and step-up odds; **Monte Carlo**
@@ -124,6 +149,22 @@ Settings holds the marginal rates (federal ST/LT, state, NIIT), filing status, o
 The **presumed-identical** toggle decides whether same-index ETFs from different issuers count as substantially identical (conservative default: yes).""",
              "Settings", lambda w: w.screens["Settings"].fed_st, None, lambda w: True,
              "Explain how the after-tax benefit and tax alpha of a harvested loss are computed."),
+        Step("tactical", "7b · Levered beta and the tactical overlay", """
+**Tactical overlay** turns a Potomac signal into a target beta (0 to 1.5) and reaches it with leveraged or inverse S&P ETFs on top of the
+core, never selling stock, never with futures or shorts, inside the Reg-T / house-maintenance margin policy you set.
+
+**How:** save a signal (manual beta, a Potomac strategy CSV, an example rule, or a blend), **Recommend overlay** for today's ticket,
+**Backtest active signal** for the day-by-day simulation. The **levered-beta model** builds an S&P stock + 2x/3x ETF basket at 1.5 beta.""",
+             "Tactical overlay", lambda w: w.screens["Tactical overlay"].lb_btn, None,
+             lambda w: bool(w.ctx.get("tactical_signals")), "Size today's overlay to take the household to a 1.5 beta and tell me the margin risk."),
+        Step("states", "12b · Every state's capital-gains rules", """
+**Tax rates** maps all 50 states + DC: how each taxes short- and long-term gains (ordinary rates, exclusions, flat capital-gains rates,
+Washington's excise), combined with federal brackets and NIIT at the client's income. Click a state on the map, read the plain-English
+explanation, and press **Use for this household** to set the marginal rates the engine values every loss at.
+
+Figures are approximate planning values; verify before filing.""",
+             "Tax rates", lambda w: w.screens["Tax rates"].map, None, lambda w: w.ctx.get("tax_state", "") != "",
+             "Compare what a $50,000 short-term loss is worth to a client in California, Texas and Massachusetts."),
     ]
 
 

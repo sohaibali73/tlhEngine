@@ -33,6 +33,10 @@ class DataService:
         if entity_id is not None:
             syms |= set(self.ctx.portfolio.held_symbols(entity_id))
         syms |= self.ctx.substitutes.all_symbols()
+        from ..optim.leverage import (
+            LEVERAGE_SYMBOLS,  # leveraged / inverse ETFs for levered-beta models and tactical overlays
+        )
+        syms |= set(LEVERAGE_SYMBOLS)
         return sorted(syms)
 
     # ------------------------------------------------------------------ snapshots

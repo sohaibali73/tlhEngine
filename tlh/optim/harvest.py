@@ -28,11 +28,11 @@ import logging
 from dataclasses import asdict, dataclass, field
 from datetime import date
 
-import cvxpy as cp
 import numpy as np
 import pandas as pd
 
 from ..data.substitutes import SubstituteMap
+from ..lazy import lazy_module
 from ..risk.model import FittedRiskModel
 from ..tax.lots import Lot
 from ..tax.rates import TaxProfile
@@ -44,6 +44,7 @@ from ..tax.washsale import (
     screen_proposed_sale,
 )
 
+cp = lazy_module("cvxpy")          # imported on first use (saves ~1.7 s at launch)
 log = logging.getLogger(__name__)
 
 PRIORITIES = ("tax", "tracking_error", "factor_neutrality")

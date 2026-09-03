@@ -15,3 +15,6 @@ venv/
 .idea/
 .vscode/
 *.xlsx
+
+# source research documents (large binaries, not part of the app)
+Tax Loss Harvesting/

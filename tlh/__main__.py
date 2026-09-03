@@ -15,6 +15,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-gui", action="store_true", help="do the requested actions and exit without the GUI")
     p.add_argument("--run-task", metavar="NAME", help="run one agent task headless (for Windows Task Scheduler) and exit")
     p.add_argument("--agent-loop", action="store_true", help="run the agent scheduler headless until Ctrl+C")
+    p.add_argument("--expert", action="store_true", help="start in expert mode (all tabs) regardless of the saved UI mode")
     p.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -80,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     if a.no_gui:
         return 0
 
+    # ---- GUI: show a splash immediately, then import the heavy modules behind it ---------------------
     from PySide6.QtCore import Qt
     from PySide6.QtWebEngineWidgets import QWebEngineView  # noqa: F401  (must import before QApplication)
     from PySide6.QtWidgets import QApplication
@@ -87,11 +89,21 @@ def main(argv: list[str] | None = None) -> int:
     QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv[:1])
     app.setApplicationName("TLH Engine")
+    from .gui.splash import make_splash
+    splash = make_splash()
+    splash.show()
+    splash.showMessage("Loading engine…")
+    app.processEvents()
     from .gui.app import MainWindow
     from .gui.theme import apply_theme
     apply_theme(app)
-    win = MainWindow()
+    splash.showMessage("Opening workspace…")
+    app.processEvents()
+    win = MainWindow(expert=a.expert)
     win.show()
+    splash.finish(win)
+    from .lazy import warm_up
+    warm_up()                       # solver imports in the background so the first optimisation is instant
     return app.exec()
 
 

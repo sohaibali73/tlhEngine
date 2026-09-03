@@ -78,7 +78,7 @@ TOOLS: list[dict[str, Any]] = [
     # ---- strategies & backtests
     {"name": "list_strategies", "description": "Portfolio construction strategies available to build_strategy_basket / backtest_strategy, with their parameters.",
      "input_schema": {"type": "object", "properties": {}}},
-    {"name": "build_strategy_basket", "description": "Build a model portfolio with a named strategy (min_variance, max_diversification, risk_parity, hrp, mean_variance, black_litterman, min_cvar, stratified_index, factor_tilt, tax_aware_transition, equal_weight, cap_weight) and save it as a basket. `params` are StrategySpec fields (n_max, max_weight, sector_band, signal_weights, ic, risk_aversion, views, cvar_alpha, tilts, target_weights, gain_budget, turnover_max, exclude...). For tax_aware_transition pass target_basket or params.target_weights.",
+    {"name": "build_strategy_basket", "description": "Build a model portfolio with a named strategy (min_variance, max_diversification, risk_parity, hrp, mean_variance, black_litterman, min_cvar, stratified_index, factor_tilt, tax_aware_transition, equal_weight, cap_weight, multi_factor, defensive_equity, quality_momentum, long_short_extension, overlay_neutral, levered_beta) and save it as a basket. `params` are StrategySpec fields (n_max, max_weight, sector_band, signal_weights, ic, risk_aversion, views, cvar_alpha, tilts, target_weights, gain_budget, turnover_max, exclude...). For tax_aware_transition pass target_basket or params.target_weights. levered_beta (no futures, no shorts): params target_beta (1.5), replicate (default true: every S&P name at index weight, lowest tracking error; set false to use n_max), margin_max (loan as a fraction of equity, 0 = cash-only so 2x/3x ETFs carry the leverage), lev_instruments, etf_max_weight, cost_weight (0 = pure tracking); always built against the S&P index benchmark; diagnostics include model TE and a realised check with actual ETF histories.",
      "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "strategy": {"type": "string"}, "params": {"type": "object"},
                                                         "benchmark": {"type": "string"}, "universe": {"type": "array", "items": {"type": "string"}},
                                                         "target_basket": {"type": "string"}, "cov_source": {"type": "string", "enum": ["model", "sample"]},
@@ -151,6 +151,47 @@ TOOLS: list[dict[str, Any]] = [
                       "required": ["path", "code", "title", "rationale"]}},
     {"name": "run_analysis", "description": "Run a Python script in the sandbox against a COPY of the state DB and read-only snapshot/model folders (SNAPSHOTS_DIR, MODELS_DIR, RUNS_DIR predefined; `tlh` importable). Print results.",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}, "timeout_s": {"type": "integer"}}, "required": ["code"]}},
+    # ---- model library, calibration, sample baskets, long/short, overlay, taxes, onboarding
+    {"name": "risk_model_presets", "description": "The risk-model library: 13 named presets (ERM standard/short/long/robust/GARCH/regime, hybrid ERM+statistical, Potomac calibrated covariances, tight-pair sample, PCA, barra_lite) with descriptions. Use a preset name in fit_risk_model's `preset`.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "run_calibration_study", "description": "Walk-forward calibration of covariance lookback x weighting x estimator x horizon (port of the 2026 Potomac study): scoreboard with bias ratios, Spearman ranks, TE bias, composite Score and a recommendation. quick=true (≈1–2 min) or full grid (several minutes).",
+     "input_schema": {"type": "object", "properties": {"quick": {"type": "boolean"}, "include_pca": {"type": "boolean"}, "include_holdings": {"type": "boolean"},
+                                                        "lookbacks": {"type": "array", "items": {"type": "integer"}}, "horizons": {"type": "array", "items": {"type": "integer"}},
+                                                        "fit_recommendation": {"type": "boolean", "description": "fit and activate the recommended calibrated model"}}}},
+    {"name": "pair_te_study", "description": "Forecast vs realised tracking error of tight substitute pairs (e.g. IVV vs SPY) by estimator: shows why the sample covariance beats shrinkage for near-identical pairs.",
+     "input_schema": {"type": "object", "properties": {"pairs": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}}, "horizon_days": {"type": "integer"}}}},
+    {"name": "build_sample_baskets", "description": "Build the sample model-portfolio library (index trackers, integrated multi-factor, defensive, quality-momentum, risk parity, HRP, style tilts, min-CVaR, Black-Litterman, 130/30 and 145/45 long/short tax engines) against the live snapshot. Optional audience filter: core | growth | defensive | income | long_short, or explicit names.",
+     "input_schema": {"type": "object", "properties": {"audience": {"type": "string"}, "names": {"type": "array", "items": {"type": "string"}}, "benchmark": {"type": "string"}}}},
+    {"name": "longshort_analysis", "description": "Economics of a long/short TLH extension (130/30, 145/45, 175/75, 200/100): Monte Carlo of net loss generation by year vs long-only, financing cost, tax benefit net of financing, and the published Quantinno reference profile.",
+     "input_schema": {"type": "object", "properties": {"extension": {"type": "number", "description": "0.30 = 130/30"}, "years": {"type": "integer"}, "market_return": {"type": "number"},
+                                                        "market_vol": {"type": "number"}, "n_paths": {"type": "integer"}}}},
+    {"name": "exchange_glide", "description": "Tax-neutral divestiture of a concentrated position using a long/short extension's expected losses (DEALS Exchange-style): year-by-year sells, gains, losses, net tax ≈ 0, years to full diversification.",
+     "input_schema": {"type": "object", "properties": {"symbol": {"type": "string", "description": "held position (uses its market value and basis)"}, "position_value": {"type": "number"},
+                                                        "cost_basis": {"type": "number"}, "extension": {"type": "number"}, "years": {"type": "integer"}}}},
+    {"name": "overlay_plan", "description": "Size an index-futures beta overlay (ES/MES/NQ/MNQ/RTY/M2K) to restore or reduce portfolio beta: contracts, notional, margin, carry, §1256 60/40 tax treatment and straddle flags. Uses the risk model's implied beta of current holdings unless portfolio_beta is given.",
+     "input_schema": {"type": "object", "properties": {"target_beta": {"type": "number"}, "contract": {"type": "string"}, "cash": {"type": "number"}, "index_level": {"type": "number"},
+                                                        "portfolio_beta": {"type": "number"}, "days": {"type": "integer"}}}},
+    {"name": "state_tax_rates", "description": "Capital-gains tax treatment for every US state + DC (approximate 2026 planning figures): state ST/LT rates, treatment (ordinary / none / exclusion / flat / excise), combined federal+NIIT+state marginal rates. Pass a state for the detailed combined calculation at a given income.",
+     "input_schema": {"type": "object", "properties": {"state": {"type": "string"}, "filing_status": {"type": "string"}, "other_income": {"type": "number"}, "gain": {"type": "number"}}}},
+    {"name": "set_tax_setup", "description": "Set the household's tax profile from state + filing status + other taxable income (derives federal, NIIT and state marginal rates; syncs the bracket schedule). Use when the advisor gives you the client's state.",
+     "input_schema": {"type": "object", "properties": {"state": {"type": "string"}, "filing_status": {"type": "string", "enum": ["single", "mfj", "mfs", "hoh"]}, "other_income": {"type": "number"}},
+                      "required": ["state", "filing_status", "other_income"]}},
+    {"name": "one_click_harvest", "description": "The Start-here flow: refresh data if stale, fit a risk model if none, run the wash-safe harvest with the saved configuration and return a plain-English summary plus the tickets.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "leverage_instruments", "description": "Leveraged / inverse S&P 500 and Nasdaq-100 ETFs the engine can use instead of futures (leverage, expense ratio), the margin policy (Reg-T initial, maintenance by leverage, buffer, rate, max loan) and the custodian capability table.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "tactical_signal", "description": "Create or update a target-beta signal for the tactical overlay: kind manual (one beta), csv (a Potomac strategy export with date + target_beta/state/score), rule:trend | rule:vol_regime | rule:composite | rule:drawdown (example rules, not Potomac models), or blend (weighted average of saved signals). Optionally make it active.",
+     "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "kind": {"type": "string"}, "manual_beta": {"type": "number"}, "path": {"type": "string"},
+                                                        "beta_min": {"type": "number"}, "beta_max": {"type": "number"},
+                                                        "components": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "weight": {"type": "number"}}}},
+                                                        "activate": {"type": "boolean"}, "description": {"type": "string"}}, "required": ["name", "kind"]}},
+    {"name": "list_tactical_signals", "description": "Saved tactical signals with statistics and which one is active.", "input_schema": {"type": "object", "properties": {}}},
+    {"name": "tactical_overlay", "description": "Size today's leveraged / inverse ETF overlay that moves the household's total beta to the target (active signal or an explicit beta) without selling core stock, within the margin policy: ticket, candidate table, margin usage, carry, tax avoided vs selling core.",
+     "input_schema": {"type": "object", "properties": {"target_beta": {"type": "number"}, "cash": {"type": "number"}}}},
+    {"name": "tactical_backtest", "description": "Daily simulation of the core plus a signal-driven leveraged/inverse ETF overlay (leveraged-fund compounding, expense, margin interest, costs): equity vs core vs index, realised beta, drawdown, overlay losses booked.",
+     "input_schema": {"type": "object", "properties": {"signal": {"type": "string"}, "start": {"type": "string"}, "long_instrument": {"type": "string"}, "inverse_instrument": {"type": "string"}}}},
+    {"name": "import_holdings", "description": "Import a broker CSV/Excel holdings export (Schwab, Fidelity, IBKR, TradeStation, Vanguard, generic) into the current entity as tax lots. dry_run=true only previews the parsed rows and column mapping.",
+     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "account_name": {"type": "string"}, "account_type": {"type": "string"}, "dry_run": {"type": "boolean"}}, "required": ["path"]}},
 ]
 
 
@@ -596,13 +637,19 @@ class ToolExecutor:
                       "how_to_read": "bias_stat ~1 is well-calibrated; >1 under-forecasts risk; <1 over-forecasts; band is the 95% range for n periods."}), None
 
     # ------------------------------------------------------------------ models
-    def t_fit_risk_model(self, overrides: dict | None = None, name: str | None = None, activate: bool = False, notes: str | None = None):
+    def t_fit_risk_model(self, overrides: dict | None = None, name: str | None = None, activate: bool = False, notes: str | None = None,
+                         preset: str | None = None):
         from ..risk.custom import load_all
-        from ..risk.model import RiskModelSpec
+        from ..risk.model import RISK_MODEL_PRESETS, RiskModelSpec, preset_spec
         load_all()
-        base = asdict(self.risk.default_spec())
-        base.update({k: v for k, v in (overrides or {}).items() if k in base})
-        spec = RiskModelSpec(**base)
+        if preset:
+            if preset not in RISK_MODEL_PRESETS:
+                return dumps({"error": f"unknown preset {preset!r}", "presets": list(RISK_MODEL_PRESETS)}), None
+            spec = preset_spec(preset, **{k: v for k, v in (overrides or {}).items() if k in RiskModelSpec.__dataclass_fields__})
+        else:
+            base = asdict(self.risk.default_spec())
+            base.update({k: v for k, v in (overrides or {}).items() if k in base})
+            spec = RiskModelSpec(**base)
         snap = self.data.latest_snapshot()
         if snap is None:
             return dumps({"error": "no snapshot"}), None
@@ -668,6 +715,159 @@ class ToolExecutor:
         res = sandbox.run_analysis(code, timeout_s=int(timeout_s))
         self.ctx.db.audit("ai", "sandbox.analysis", None, passed=res.passed, duration=res.duration_s)
         return res.summary(max_chars=12000), None
+
+
+    # ------------------------------------------------------------------ model library / calibration
+    def t_risk_model_presets(self):
+        from ..risk.model import preset_table
+        return dumps(records(preset_table())), None
+
+    def t_run_calibration_study(self, quick: bool = True, include_pca: bool = False, include_holdings: bool = True,
+                                lookbacks: list[int] | None = None, horizons: list[int] | None = None, fit_recommendation: bool = False):
+        out = self.risk.calibrate(quick=bool(quick), include_pca=bool(include_pca), include_holdings=bool(include_holdings), entity_id=self.eid,
+                                  lookbacks=tuple(lookbacks) if lookbacks else None, horizons=tuple(horizons) if horizons else None)
+        board = out["scoreboard"]
+        cols = ["Horizon", "RankInHorizon", "Lookback", "Weighting", "Estimator", "Score", "BiasRatio", "Spearman", "CorrBias", "CorrRMSE", "CorrSpearman", "TEBiasRatio", "TESpearman", "Dates"]
+        res = {"recommendation": out["recommendation"], "winners": records(out["winners"][cols].round(4)),
+               "scoreboard_top": records(board.sort_values(["Horizon", "Score"]).groupby("Horizon").head(6)[cols].round(4)),
+               "by_lookback": records(out["by_lookback"].round(4)), "by_weighting": records(out["by_weighting"].round(4)),
+               "by_estimator": records(out["by_estimator"].round(4)), "grid": out["grid"],
+               "caveats": "All specifications under-forecast on average (bias ratios > 1: fat tails); treat forecasts as a floor. Use the sample matrix for tight substitute pairs."}
+        if fit_recommendation:
+            spec = self.risk.spec_from_recommendation(out["recommendation"])
+            snap = self.data.latest_snapshot()
+            mid, m = self.risk.fit(snap, spec, notes="calibration study recommendation (YANG)", make_active=True)
+            res["fitted_model_version_id"] = mid
+            res["fitted_diagnostics"] = {k: v for k, v in m.diagnostics.items() if not isinstance(v, dict | list)}
+        return dumps(res), None
+
+    def t_pair_te_study(self, pairs: list[list[str]] | None = None, horizon_days: int = 63):
+        df = self.risk.pair_study([tuple(p) for p in pairs] if pairs else None, horizon=int(horizon_days))
+        if df.empty:
+            return dumps({"error": "no pairs with enough history in the snapshot"}), None
+        best = df.sort_values("abs_bias_dev").groupby("pair").head(1)
+        return dumps({"least_biased_per_pair": records(best.round(4)), "all": records(df.round(4), limit=200)}), None
+
+    # ------------------------------------------------------------------ sample baskets / long-short / overlay
+    def t_build_sample_baskets(self, audience: str | None = None, names: list[str] | None = None, benchmark: str | None = None):
+        df = self.baskets.build_library(names=names, audience=audience, benchmark_name=benchmark)
+        return dumps({"built": records(df.round(4))}), None
+
+    def t_longshort_analysis(self, extension: float = 0.30, years: int = 10, market_return: float = 0.06, market_vol: float = 0.16, n_paths: int = 150):
+        from ..optim.longshort import LongShortSpec, simulate_loss_generation
+        prof = self.ctx.tax.default_profile()
+        res = simulate_loss_generation(LongShortSpec(extension=float(extension), years=int(years), market_return=float(market_return),
+                                                     market_vol=float(market_vol), n_paths=int(n_paths), st_rate=prof.st_rate, lt_rate=prof.lt_rate))
+        return dumps({"summary": res.summary, "financing": res.financing, "by_year": records(res.by_year.round(4)), "reference_10y_avg": res.reference,
+                      "note": "Simulation, not a forecast; Quantinno reference rows are published marketing averages (Apr 2026)."}), None
+
+    def t_exchange_glide(self, symbol: str | None = None, position_value: float | None = None, cost_basis: float | None = None,
+                         extension: float = 0.30, years: int = 10):
+        from ..optim.longshort import exchange_glide, years_to_diversify_table
+        prof = self.ctx.tax.default_profile()
+        if symbol:
+            lots = self.portfolio.lots_view(self.eid, snap=self.data.latest_snapshot())
+            sub = lots[lots["symbol"] == symbol.upper()]
+            if sub.empty:
+                return dumps({"error": f"{symbol} not held"}), None
+            position_value, cost_basis = float(sub["market_value"].sum()), float(sub["cost_basis"].sum())
+        if position_value is None or cost_basis is None:
+            return dumps({"error": "give symbol or position_value + cost_basis"}), None
+        df = exchange_glide(float(position_value), float(cost_basis), float(extension), int(years), lt_rate=prof.lt_rate, st_rate=prof.st_rate)
+        return dumps({"schedule": records(df.round(2)), "years_to_full_divestiture": df.attrs.get("years_to_full_divestiture"),
+                      "reference_years_table": years_to_diversify_table().reset_index().to_dict("records"),
+                      "how_it_works": "each year sell the amount whose long-term tax equals the value of the extension's expected short-term losses"}), None
+
+    def t_overlay_plan(self, target_beta: float = 1.0, contract: str = "MES", cash: float = 0.0, index_level: float | None = None,
+                       portfolio_beta: float | None = None, days: int = 31):
+        from ..optim.overlay import CONTRACTS, OverlayInputs, beta_from_model, plan_overlay
+        snap = self.data.latest_snapshot()
+        lots = self.portfolio.lots_view(self.eid, snap=snap)
+        value = float(lots["market_value"].sum()) if not lots.empty else 0.0
+        if portfolio_beta is None:
+            act = self.risk.active()
+            if act is None or lots.empty:
+                return dumps({"error": "need holdings and an active risk model, or pass portfolio_beta"}), None
+            w = lots.groupby("symbol")["market_value"].sum()
+            portfolio_beta = beta_from_model(act[1], w)
+        if index_level is None and snap is not None:
+            px = snap.last_prices()
+            proxy = CONTRACTS.get(contract, CONTRACTS["MES"])["proxy_etf"]
+            if proxy in px.index:
+                index_level = float(px[proxy]) * CONTRACTS[contract]["etf_ratio"]
+        if index_level is None:
+            return dumps({"error": "index_level needed (proxy ETF not in snapshot)"}), None
+        prof = self.ctx.tax.default_profile()
+        plan = plan_overlay(OverlayInputs(portfolio_value=value + float(cash), portfolio_beta=float(portfolio_beta), target_beta=float(target_beta), cash=float(cash),
+                                          index_level=float(index_level), contract=contract, days=int(days), st_rate=prof.st_rate, lt_rate=prof.lt_rate))
+        return dumps(plan.to_dict()), None
+
+    # ------------------------------------------------------------------ taxes / onboarding
+    def t_state_tax_rates(self, state: str | None = None, filing_status: str = "single", other_income: float = 300_000.0, gain: float = 0.0):
+        from ..explain import explain_state
+        from ..tax import state_rates as sr
+        if state:
+            c = sr.combined_marginal(state, filing_status, float(other_income), float(gain))
+            return dumps({**c, "explanation": explain_state(c)}), None
+        t = sr.table(float(other_income))
+        return dumps({"year": sr.data_year(), "states": records(t.round(4)), "note": "approximate planning figures; verify before filing"}), None
+
+    def t_set_tax_setup(self, state: str, filing_status: str, other_income: float):
+        from ..services.home_service import HomeService
+        out = HomeService(self.ctx).apply_tax_setup(state, filing_status, float(other_income))
+        return dumps({"st_rate": out["st_rate"], "lt_rate": out["lt_rate"], "combined": out.get("combined")}), None
+
+    def t_one_click_harvest(self):
+        from ..services.home_service import HomeService
+        res = HomeService(self.ctx).one_click(self.eid)
+        return dumps({"run_id": res.run_id, "steps": res.steps, "summary": res.summary, "explanation": res.sentences,
+                      "trades": records(res.trades, drop=("wash_explanation",))}), None
+
+    # ------------------------------------------------------------------ tactical overlay / leverage
+    def _tactical(self):
+        from ..services.tactical_service import TacticalService
+        return TacticalService(self.ctx)
+
+    def t_leverage_instruments(self):
+        from ..optim.overlay import custodian_capabilities
+        svc = self._tactical()
+        return dumps({"instruments": records(svc.instruments()), "margin_policy": asdict(svc.policy()), "custodians": records(custodian_capabilities()),
+                      "note": "No futures, no direct shorts: inverse funds cut beta, leveraged funds raise it; leveraged funds decay with volatility."}), None
+
+    def t_tactical_signal(self, name: str, kind: str, manual_beta: float = 1.0, path: str | None = None, beta_min: float = 0.0, beta_max: float = 1.5,
+                          components: list[dict] | None = None, activate: bool = False, description: str = ""):
+        from ..optim.tactical import SignalSpec
+        svc = self._tactical()
+        out = svc.save_signal(SignalSpec(name=name, kind=kind, manual_beta=float(manual_beta), path=path, beta_min=float(beta_min), beta_max=float(beta_max),
+                                         components=components or [], description=description))
+        if activate:
+            svc.set_active(name)
+        return dumps({**out, "active": svc.active_name()}), None
+
+    def t_list_tactical_signals(self):
+        svc = self._tactical()
+        return dumps({"signals": records(svc.list_signals()), "active": svc.active_name(), "rules": svc.rules()}), None
+
+    def t_tactical_overlay(self, target_beta: float | None = None, cash: float = 0.0):
+        out = self._tactical().recommend(target_beta, float(cash), entity_id=self.eid)
+        out["table"] = records(out["table"]) if isinstance(out.get("table"), pd.DataFrame) else []
+        return dumps(out), None
+
+    def t_tactical_backtest(self, signal: str | None = None, start: str | None = None, long_instrument: str = "SSO", inverse_instrument: str = "SDS"):
+        res = self._tactical().backtest(signal, start, long_instrument, inverse_instrument, entity_id=self.eid)
+        eq = res["equity"]
+        yearly = eq.resample("YE").last().pct_change().dropna() if len(eq) else pd.Series(dtype=float)
+        return dumps({"signal": res["signal"], "core_source": res["core_source"], "metrics": res["metrics"],
+                      "yearly_returns": {str(k.year): round(float(v), 4) for k, v in yearly.items()},
+                      "note": "simulation with leveraged-fund daily compounding, expense ratios, margin interest and 5 bps costs; not a forecast"}), None
+
+    def t_import_holdings(self, path: str, account_name: str = "Imported brokerage", account_type: str = "taxable", dry_run: bool = False):
+        from ..services.import_service import ImportService, plan_import
+        plan = plan_import(path, default_account=account_name)
+        out = {"rows": plan.n_rows, "mapping": plan.mapping, "warnings": plan.warnings, "preview": records(plan.frame, limit=50)}
+        if not dry_run:
+            out["result"] = ImportService(self.ctx).execute(self.eid, plan, account_type=account_type)
+        return dumps(out), None
 
 
 def is_editable_path(path: str) -> bool:

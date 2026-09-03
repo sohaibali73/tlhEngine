@@ -50,7 +50,9 @@ class PortfolioScreen(QWidget):
         top.addWidget(button("Record buy", lambda: self._trade("BUY")))
         top.addWidget(button("Record sell", lambda: self._trade("SELL")))
         top.addWidget(button("Scheduled event", self._scheduled))
-        top.addWidget(button("Import lots CSV", self._import))
+        top.addWidget(button("Import broker file…", self._import_broker, primary=True,
+                             tooltip="Schwab / Fidelity / IBKR / TradeStation / Vanguard or any CSV/Excel with symbol, quantity, cost, date"))
+        top.addWidget(button("Import lots CSV", self._import, tooltip="Simple template: account, symbol, date, quantity, price"))
         root.addLayout(top)
 
         kpis = QHBoxLayout()
@@ -250,4 +252,11 @@ class PortfolioScreen(QWidget):
             return
         n = import_lots_csv(self, self.ps, self.ctx.entities.accounts(eid))
         if n:
+            self.data_changed.emit()
+
+    def _import_broker(self) -> None:
+        from ..import_dialog import ImportDialog
+        d = ImportDialog(self.app, self)
+        if d.exec():
+            self.app.reload_entities()
             self.data_changed.emit()
