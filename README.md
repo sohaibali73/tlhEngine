@@ -62,7 +62,8 @@ tests/               150 tests (tax rules are hand-verified against IRS Pub 550 
 var/                 runtime state (git-ignored): tlh.sqlite, cache/snapshots, models, runs, exports, sandbox, logs
 ```
 
-See DECISIONS.md for every stack decision and the tax conventions, docs/ARCHITECTURE.md for data flow.
+See DECISIONS.md for every stack decision and the tax conventions, docs/ARCHITECTURE.md for data flow, and
+[docs/WHITEPAPER.md](docs/WHITEPAPER.md) for the full write-up of the algorithms, validation and the AI-assisted operating model.
 
 ## Data
 
