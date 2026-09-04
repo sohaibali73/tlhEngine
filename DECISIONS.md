@@ -270,6 +270,55 @@ Change a decision here first, then in code.
 - `optim/basket_library.py` is the 17-recipe sample library built through `StrategyService.build`; recipes are data so
   YANG can add them.
 
+## D22. TLH research laboratory (added 2026-09-04)
+- Purpose: decide and defend the harvesting parameters (account size, basket size, trigger, approach, concentrated
+  starts) with the distribution of historical outcomes, not one backtest. Windows start on the first trading day of every
+  calendar year from 2000 (5 or 10 years, monthly review); results are medians and interquartile ranges across windows.
+- Data: a separate deep store (var/research/store) built from Norgate "S&P 500 Current & Past" (1,211 symbols with prices
+  since 1999, 550 delisted), split-adjusted closes + cash dividends, point-in-time membership, today's GICS sectors and
+  shares. Numpy arrays memory-mapped by worker processes. The benchmark return is the real S&P 500 TR index; the
+  construction cap weights are a proxy (adjusted close x today's shares) and are labelled as such in every report.
+  Fundamentals are not point-in-time in Norgate, so twin pairing uses price-based descriptors (size, momentum, vol,
+  beta, yield) rather than price-to-book.
+- Simulator (research/engine.py) is deliberately separate from the production tax code: a lean lot model with the two
+  wash rules that matter for research (no loss sale of a name bought inside 30 days, no re-buy inside 30 days of a loss
+  sale), whole shares, a minimum trade, a flat cost per trade, delistings sold at the last close, dividends reinvested at
+  the next review. The trigger is a lot loss as a fraction of account value (the brief's 0.01% .. 1%) or of lot cost.
+  A concentrated start is unwound only as far as realised losses (plus an optional gain budget) cover the gain.
+- Approaches: pairs on the fly within sector / within index (trailing 252-day correlation), SARD twin baskets (pre-paired
+  same-sector twins, re-paired yearly, swap back when the twin is harvested), and a TE optimizer (buys only, sector band,
+  factor-alignment bands, name cap, wash exclusions). Risk model everywhere: the calibration study's 126-day equal-weight
+  Ledoit-Wolf covariance (D18), kept as the house approach. The optimizer is a direct OSQP QP (about 0.1 s per month);
+  cvxpy is only a fallback. Bands relax in stages (x2, x4, sector only, box only) and the stage that worked last month is
+  tried first, so the bands re-tighten when they can.
+- Metrics: harvested losses per year (% of start; ST/LT split and tax value), harvest life (last month with trailing-12-month
+  yield above 0.2% of value) and half-life, realised TE (daily active vs the TR index) and ex-ante forecast, turnover,
+  trades, wash-window blocks, names held (whole-share rounding makes small accounts fail visibly), ending embedded gain,
+  months to diversify a concentrated position. Live 2010-2020 base case ($500k, 150 names, 0.25% trigger): 1.7-2.3% a year
+  harvested at 2.0-2.6% TE, half-life 28-69 months by approach; $10k holds 7 names at 11.6% TE.
+- Execution: ProcessPoolExecutor over (parameter set, window); results in parquet, resumable; a full MVP study (~550
+  runs) takes 20-30 minutes on this machine, quick mode (every 3rd start year) under 10.
+
+## D23. Potomac strategies as overlay signals from fund NAVs; YANG chat rendering (added 2026-09-04)
+- The five Potomac strategies (Bull Bear, Focused Growth, Guardian, Income Plus, Navigrowth) each hold the same five
+  tactical funds (CRDBX, CRTPX, CRTBX, CRMVX, CRTOX) at 80% core / 4 x 5% target allocations (fact sheets; subject to
+  change). `optim/potomac.py` encodes them and reads each fund's risk state off its NAV: the funds go to cash and the NAV
+  prints flat. state = 0 on a day the published NAV is unchanged to the cent *and* the fund's exposure times the index
+  move would have moved it by more than two cents (otherwise the day is uninformative and the previous state carries);
+  exposure = state x slow beta (the fund's beta over its last 60 risk-on days, re-read monthly, so a risk-on day is worth
+  ~1 for the equity funds and ~0.15 for Managed Volatility). Strategy exposure = sum of allocation x fund exposure, mapped
+  onto [beta_min, beta_max]. Data: Yahoo Finance adjusted NAVs (returns) and published closes (flat test) via yfinance,
+  cached 12 h under var/tactical/navs; Norgate has no mutual funds.
+- Timing: every non-manual signal is generated on the prior close and traded on the next close (`SignalSpec.lag_days = 1`,
+  applied to potomac, csv, rules and blends); the simulator and the recommendation use the lagged series.
+- Live (2020-07 to 2026-09): Bull Bear mean target beta 1.03 with 55 changes a year at a 0.05 threshold; Income Plus
+  0.33. Caveat: a flat NAV is only evidence of cash when the day was informative; low-beta funds and stale prints can
+  still produce false risk-off days, hence `nav_confirm_days` (default 1) for operators who prefer confirmation.
+- YANG chat: markdown rendered with markdown-it (headings become bold labels, hashtags never leak, tables and code keep
+  styling), each transcript item's HTML is cached so a streamed token re-renders one bubble, the flush interval is 40 ms,
+  and an animated working indicator (status spinner + pulsing bubble) shows thinking / reasoning / tool / writing states.
+  The system prompt asks for chat formatting (no headings, no emoji, results first).
+
 ## D21. Levered beta without futures, margin policy, tactical overlay (added 2026-09-03)
 - Futures are not available on the advisor custody platforms and direct shorting is not permitted (broker notes, Aug 2026),
   so leverage comes from leveraged / inverse ETFs (`optim/leverage.INSTRUMENTS`: SSO, SPUU, UPRO, SPXL, SH, SDS, SPXU,

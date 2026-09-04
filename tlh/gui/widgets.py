@@ -154,10 +154,18 @@ class FrameTable(QWidget):
             df = df[cols] if cols else df
         self.model.set_frame(df)
         self.count.setText(f"{len(df):,} rows")
-        self.view.resizeColumnsToContents()
-        for i in range(self.model.columnCount()):
-            if self.view.columnWidth(i) > 320:
-                self.view.setColumnWidth(i, 320)
+        self._size_columns()
+
+    def _size_columns(self, sample: int = 60, max_width: int = 320) -> None:
+        """Column widths from the header text and the first `sample` rows (resizeColumnsToContents walks every row)."""
+        fm = self.view.fontMetrics()
+        n = min(self.model.rowCount(), sample)
+        pad = 18
+        for j in range(self.model.columnCount()):
+            w = fm.horizontalAdvance(str(self.model.headerData(j, Qt.Horizontal))) + pad + 12
+            for i in range(n):
+                w = max(w, fm.horizontalAdvance(self.model.display_at(i, j)) + pad)
+            self.view.setColumnWidth(j, min(w, max_width))
 
     def _full_row(self, proxy_index) -> dict:
         src_row = self.proxy.mapToSource(proxy_index).row()

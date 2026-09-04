@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import time
 
 import pandas as pd
@@ -11,10 +12,12 @@ from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextDocument
 from PySide6.QtWidgets import (
     QComboBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QSplitter,
     QTabWidget,
     QTextBrowser,
@@ -71,27 +74,67 @@ class DiffHighlighter(QSyntaxHighlighter):
         self.setFormat(0, len(text), fmt)
 
 
+_MD = None
+
+
+def _md():
+    global _MD
+    if _MD is None:
+        try:
+            from markdown_it import MarkdownIt
+            _MD = MarkdownIt("js-default", {"html": False, "linkify": False, "typographer": False})
+        except Exception:  # pragma: no cover - fallback to Qt's markdown
+            _MD = False
+    return _MD
+
+
+_HEADING = re.compile(r"^(#{1,6})([^#\s])", re.M)          # "#Title" -> "# Title" so it is a heading, not a hashtag
+_LONE_HASH = re.compile(r"^#{1,6}\s*$", re.M)                # a bare "##" line while streaming: drop it
+
+
 def md_to_html(text: str) -> str:
+    """Markdown -> HTML for the chat. Headings become bold labels (a chat window is not a document), hashtags never leak,
+    tables and fenced code keep their styling. Falls back to Qt's markdown if markdown-it is unavailable."""
+    if not text:
+        return ""
+    t = _LONE_HASH.sub("", _HEADING.sub(r"\1 \2", text))
+    md = _md()
+    if md:
+        body = md.render(t)
+        body = re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<p style='margin:8px 0 2px 0'><b>\1</b></p>", body, flags=re.S)
+        body = body.replace("<hr>", "").replace("<hr />", "")
+        body = body.replace("<table>", f"<table cellspacing='0' cellpadding='4' style='border-collapse:collapse;border:1px solid {theme.BORDER}'>")
+        body = body.replace("<th>", f"<th style='border:1px solid {theme.BORDER};padding:2px 6px;background:{theme.BG3}'>")
+        body = body.replace("<td>", f"<td style='border:1px solid {theme.BORDER};padding:2px 6px'>")
+        body = body.replace("<pre>", f"<pre style='background:{theme.BG3};padding:6px;border:1px solid {theme.BORDER}'>")
+        body = body.replace("<code>", f"<code style='background:{theme.BG3};color:{theme.ACCENT2}'>")
+        return body
     doc = QTextDocument()
-    doc.setMarkdown(text)
+    doc.setMarkdown(t)
     body = doc.toHtml()
-    # keep only the body content so our own container styling applies
     i, j = body.find("<body"), body.rfind("</body>")
     if i >= 0 and j > i:
         body = body[body.find(">", i) + 1: j]
-    return body
+    return re.sub(r"<h[1-6][^>]*>(.*?)</h[1-6]>", r"<p><b>\1</b></p>", body, flags=re.S)
+
+
+SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 
 class Transcript(QTextBrowser):
-    """Renders a list of items (user / assistant / thinking / tool) as HTML; throttled re-render while streaming."""
+    """Renders a list of items (user / assistant / thinking / tool) as HTML. Each item's HTML is cached and only re-rendered
+    when that item changes, so a streaming token costs one small markdown render, not the whole conversation. A working
+    bubble with an animated indicator sits at the bottom while a turn is in flight."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setOpenExternalLinks(True)
         self.items: list[dict] = []
         self._dirty = False
+        self._busy: str | None = None
+        self._frame = 0
         self._timer = QTimer(self)
-        self._timer.setInterval(90)
+        self._timer.setInterval(40)
         self._timer.timeout.connect(self._flush)
         self._timer.start()
         self.document().setDefaultStyleSheet(
@@ -104,19 +147,34 @@ class Transcript(QTextBrowser):
         self._dirty = True
 
     def add(self, item: dict) -> dict:
+        item["_html"] = None
         self.items.append(item)
         self._dirty = True
         return item
 
-    def touch(self) -> None:
+    def touch(self, item: dict | None = None) -> None:
+        if item is not None:
+            item["_html"] = None
+        else:
+            for it in self.items:
+                it["_html"] = None
         self._dirty = True
 
-    def _flush(self) -> None:
-        if not self._dirty:
-            return
-        self._dirty = False
-        parts = []
-        for it in self.items:
+    def set_busy(self, status: str | None) -> None:
+        """Show (status text) or hide (None) the working bubble."""
+        if status != self._busy:
+            self._busy = status
+            self._dirty = True
+
+    def _render_item(self, it: dict) -> str:
+        if it.get("_html") is not None and it["kind"] != "tool":
+            return it["_html"]
+        it["_html"] = self._render_item_uncached(it)
+        return it["_html"]
+
+    def _render_item_uncached(self, it: dict) -> str:
+        parts: list[str] = []
+        for _ in (0,):
             k = it["kind"]
             if k == "user":
                 parts.append(f"<div style='margin:10px 0 4px 0;padding:6px 10px;background:{theme.BG3};border-left:3px solid {theme.ACCENT2}'>"
@@ -140,12 +198,69 @@ class Transcript(QTextBrowser):
                 parts.append(f"<div style='margin:6px 0 10px 0'><b style='color:{theme.GREEN}'>YANG</b>{md_to_html(it['text'])}</div>")
             elif k == "error":
                 parts.append(f"<div style='margin:6px 0;color:{theme.RED}'>{html.escape(it['text'])}</div>")
+        return "".join(parts)
+
+    def _flush(self) -> None:
+        if not self._dirty:
+            return
+        self._dirty = False
+        parts = [self._render_item(it) for it in self.items]
         sb = self.verticalScrollBar()
         at_bottom = sb.value() >= sb.maximum() - 40
         self.setHtml("<body>" + "".join(parts) + "</body>")
         if at_bottom:
             self.moveCursor(QTextCursor.MoveOperation.End)
             sb.setValue(sb.maximum())
+
+
+class WorkingBar(QFrame):
+    """Large, unmistakable activity indicator shown while a turn is in flight: a sweeping bar plus what YANG is doing."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("workingBar")
+        self.setStyleSheet(f"#workingBar{{background:{theme.BG2};border:1px solid {theme.ACCENT};border-radius:6px}}")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setSpacing(6)
+        self.label = QLabel("")
+        self.label.setTextFormat(Qt.RichText)
+        self.label.setStyleSheet(f"font-size:14px;color:{theme.TEXT}")
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 0)                       # indeterminate: Qt animates the sweep
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(8)
+        self.bar.setStyleSheet(f"QProgressBar{{background:{theme.BG3};border:none;border-radius:4px}} QProgressBar::chunk{{background:{theme.ACCENT};border-radius:4px}}")
+        lay.addWidget(self.label)
+        lay.addWidget(self.bar)
+        self._t0 = time.time()
+        self._frame = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(120)
+        self._timer.timeout.connect(self._tick)
+        self._what = ""
+        self.hide()
+
+    def start(self, what: str) -> None:
+        self._t0 = time.time()
+        self.set_what(what)
+        self.show()
+        self._timer.start()
+
+    def set_what(self, what: str) -> None:
+        self._what = what
+        self._tick()
+
+    def stop(self) -> None:
+        self._timer.stop()
+        self.hide()
+
+    def _tick(self) -> None:
+        self._frame = (self._frame + 1) % len(SPINNER)
+        dots = "." * (1 + self._frame % 3)
+        el = time.time() - self._t0
+        self.label.setText(f"<span style='color:{theme.ACCENT};font-size:18px'>{SPINNER[self._frame]}</span>&nbsp; <b>YANG</b> is {html.escape(self._what)}{dots}"
+                           f"&nbsp;&nbsp;<span style='color:{theme.MUTED};font-size:12px'>{el:.0f}s · Stop cancels the turn</span>")
 
 
 class CopilotScreen(QWidget):
@@ -173,8 +288,8 @@ class CopilotScreen(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
         top = QHBoxLayout()
-        top.addWidget(header("YANG — your quant co-pilot", f"Built on {self.copilot.model} · effort {self.copilot.effort}. Builds baskets, plans and runs harvests, fits model variants, "
-                                            "designs TLH model pipelines, and proposes code changes that you approve (sandboxed, versioned, reversible)."))
+        top.addWidget(header("YANG — your quant co-pilot", "Builds baskets, plans and runs harvests, fits model variants, designs TLH model pipelines, runs research, "
+                                            "and proposes code changes that you approve (sandboxed, versioned, reversible)."))
         top.addStretch(1)
         self.conv = QComboBox()
         self.conv.setMinimumWidth(260)
@@ -195,6 +310,8 @@ class CopilotScreen(QWidget):
         cl.setContentsMargins(0, 0, 4, 0)
         self.transcript = Transcript()
         cl.addWidget(self.transcript, 1)
+        self.working = WorkingBar()
+        cl.addWidget(self.working)
         self.sugg = QComboBox()
         self.sugg.addItem("Suggestions…")
         self.sugg.addItems(SUGGESTIONS)
@@ -207,12 +324,24 @@ class CopilotScreen(QWidget):
         cl.addWidget(self.input)
         self.status_lbl = QLabel("")
         self.status_lbl.setProperty("muted", True)
+        self.status_lbl.setTextFormat(Qt.RichText)
+        self._anim = QTimer(self)
+        self._anim.setInterval(110)
+        self._anim.timeout.connect(self._tick)
+        self._busy_text = ""
         self.cost_lbl = QLabel("")
         self.cost_lbl.setProperty("muted", True)
         self.send_btn = button("Send", self.send, primary=True)
         self.stop_btn = button("Stop", self.stop, danger=True)
         self.stop_btn.setEnabled(False)
-        cl.addWidget(hbox(self.status_lbl, None, self.cost_lbl, self.stop_btn, self.send_btn))
+        self.effort = QComboBox()
+        self.effort.setToolTip("How hard YANG thinks this session: low is fastest, high is most thorough. The default comes from Settings.")
+        for e in ("low", "medium", "high", "xhigh", "max"):
+            self.effort.addItem(f"effort: {e}", e)
+        i = self.effort.findData(self.copilot.effort)
+        self.effort.setCurrentIndex(i if i >= 0 else 1)
+        self.effort.currentIndexChanged.connect(lambda _i: setattr(self.copilot, "effort", self.effort.currentData()))
+        cl.addWidget(hbox(self.status_lbl, None, self.cost_lbl, self.effort, self.stop_btn, self.send_btn))
         split.addWidget(chat)
 
         self.tabs = QTabWidget()
@@ -337,7 +466,10 @@ class CopilotScreen(QWidget):
         self.send_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self._t0 = time.time()
-        self._set_status("thinking…")
+        self._busy_text = "thinking"
+        self.working.start("thinking")
+        self._set_status("thinking")
+        self._anim.start()
         st = _Streamer()
         st.text.connect(self._on_text)
         st.thinking.connect(self._on_thinking)
@@ -350,21 +482,36 @@ class CopilotScreen(QWidget):
         cb = ChatCallbacks(on_text=st.text.emit, on_thinking=st.thinking.emit,
                            on_tool_start=lambda i, n, a: st.tool_start.emit(i, n, json.dumps(a, default=str)),
                            on_tool_end=lambda i, n, r, ok, s: st.tool_end.emit(i, n, r, ok, s), on_status=st.status.emit)
-        run_task(lambda: self.copilot.chat(self.conversation_id, text, cb), on_done=st.done.emit, on_error=st.failed.emit, wants_progress=False)
+        # lambdas, not bound `.emit` methods: PySide keeps only a weak reference to a bound method of a temporary SignalInstance,
+        # so `on_done=st.done.emit` is silently dropped and the turn never reports completion
+        run_task(lambda: self.copilot.chat(self.conversation_id, text, cb), on_done=lambda r: st.done.emit(r), on_error=lambda m: st.failed.emit(m),
+                 wants_progress=False)
 
     def stop(self) -> None:
         self.copilot.cancel()
-        self._set_status("stopping…")
+        self._set_status("stopping")
 
     def _set_status(self, s: str) -> None:
-        self.status_lbl.setText(f"● {s}   ({time.time() - getattr(self, '_t0', time.time()):.0f}s)")
+        self._busy_text = s.rstrip("…").strip()
+        if self.working.isVisible():
+            self.working.set_what(self._busy_text)
+        self._tick()
+
+    def _tick(self) -> None:
+        """Animated status line while a turn is in flight."""
+        if not self.stop_btn.isEnabled():
+            self._anim.stop()
+            return
+        el = time.time() - getattr(self, "_t0", time.time())
+        self.status_lbl.setText(f"{self._busy_text} · {el:.0f}s")
 
     def _on_text(self, t: str) -> None:
         if self._cur_assistant is None or self._cur_assistant.get("closed"):
             self._cur_assistant = self.transcript.add({"kind": "assistant", "text": ""})
         self._cur_assistant["text"] += t
-        self.transcript.touch()
-        self._set_status("writing…")
+        self.transcript.touch(self._cur_assistant)
+        if self._busy_text != "writing":
+            self._set_status("writing")
 
     def _on_thinking(self, t: str) -> None:
         if not t:
@@ -374,8 +521,9 @@ class CopilotScreen(QWidget):
             if self._cur_assistant is not None:
                 self._cur_assistant["closed"] = True
         self._cur_thinking["text"] += t
-        self.transcript.touch()
-        self._set_status("reasoning…")
+        self.transcript.touch(self._cur_thinking)
+        if self._busy_text != "reasoning":
+            self._set_status("reasoning")
 
     def _on_tool_start(self, tid: str, name: str, args_json: str) -> None:
         if self._cur_assistant is not None:
@@ -386,21 +534,23 @@ class CopilotScreen(QWidget):
         except json.JSONDecodeError:
             args = {"raw": args_json}
         self._tool_items[tid] = self.transcript.add({"kind": "tool", "name": name, "args": args, "status": "running"})
-        self._set_status(f"running {name}…")
+        self._set_status(f"running {name}")
 
     def _on_tool_end(self, tid: str, name: str, result: str, ok: bool, secs: float) -> None:
         it = self._tool_items.get(tid)
         if it is not None:
             it.update({"status": "done", "ok": ok, "seconds": secs, "result": result})
-            self.transcript.touch()
+            self.transcript.touch(it)
         self._activity.append({"time": time.strftime("%H:%M:%S"), "tool": name, "args": json.dumps(it.get("args", {}) if it else {}, default=str)[:200],
                                "ok": ok, "seconds": round(secs, 2), "result": result[:200].replace("\n", " ")})
         self.activity.set_frame(pd.DataFrame(self._activity[::-1]))
-        self._set_status("thinking…")
+        self._set_status("thinking")
 
     def _turn_done(self, res) -> None:
         self.send_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self._anim.stop()
+        self.working.stop()
         if self._cur_assistant is not None:
             self._cur_assistant["closed"] = True
         for k, v in res.usage.items():
@@ -420,6 +570,8 @@ class CopilotScreen(QWidget):
     def _turn_failed(self, msg: str) -> None:
         self.send_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self._anim.stop()
+        self.working.stop()
         self.status_lbl.setText("failed")
         self.transcript.add({"kind": "error", "text": msg.splitlines()[0][:400]})
         self.app.error(msg)

@@ -26,12 +26,14 @@ from PySide6.QtWidgets import (
 )
 
 from ...optim.leverage import DEFAULT_LONG_LEVERED, INSTRUMENTS, MarginPolicy
+from ...optim.potomac import STRATEGIES as POTOMAC_STRATEGIES
+from ...optim.potomac import STRATEGY_OBJECTIVE
 from ...optim.strategies import StrategySpec
 from ...optim.tactical import RULES, SignalSpec
 from ...services.strategy_service import StrategyService
 from ...services.tactical_service import TacticalService
 from .. import charts, theme
-from ..widgets import FrameTable, KpiCard, TextPanel, button, hbox, header, money, pct
+from ..widgets import FrameTable, KpiCard, TextPanel, button, hbox, header, money, pct, vbox
 from ..workers import run_task
 
 
@@ -71,6 +73,7 @@ class TacticalScreen(QWidget):
         self.sig_name = QLineEdit("Potomac composite")
         self.sig_kind = QComboBox()
         self.sig_kind.addItem("manual target beta", "manual")
+        self.sig_kind.addItem("Potomac strategy (fund NAVs via Yahoo Finance)", "potomac")
         self.sig_kind.addItem("Potomac strategy CSV (date + target_beta / state / score)", "csv")
         for k in RULES:
             self.sig_kind.addItem(f"{k} — example rule", k)
@@ -93,8 +96,17 @@ class TacticalScreen(QWidget):
         self.beta_max.setValue(1.5)
         self.blend = QLineEdit()
         self.blend.setPlaceholderText("name=weight, name=weight")
+        self.strategy = QComboBox()
+        for k in POTOMAC_STRATEGIES:
+            self.strategy.addItem(k, k)
+        self.strategy.currentIndexChanged.connect(lambda _i: self._show_strategy())
+        self.strategy_lbl = QLabel("")
+        self.strategy_lbl.setWordWrap(True)
+        self.strategy_lbl.setProperty("muted", True)
         f.addRow("Name", self.sig_name)
         f.addRow("Source", self.sig_kind)
+        self.row_potomac = (QLabel("Strategy"), vbox(self.strategy, self.strategy_lbl, hbox(button("Fund state (NAVs)", self._potomac_state), None)))
+        f.addRow(*self.row_potomac)
         self.row_manual = (QLabel("Target beta"), hbox(self.manual_slider, self.manual_lbl))
         f.addRow(*self.row_manual)
         self.row_csv = (QLabel("CSV"), hbox(self.csv_path, button("Browse…", self._browse)))
@@ -261,6 +273,40 @@ class TacticalScreen(QWidget):
             wdg.setVisible(k == "csv")
         for wdg in self.row_blend:
             wdg.setVisible(k == "blend")
+        for wdg in self.row_potomac:
+            wdg.setVisible(k == "potomac")
+        if k == "potomac":
+            self._show_strategy()
+
+    def _show_strategy(self) -> None:
+        name = self.strategy.currentData()
+        if not name:
+            return
+        w = POTOMAC_STRATEGIES[name]
+        mix = ", ".join(f"{f} {a:.0%}" for f, a in sorted(w.items(), key=lambda kv: -kv[1]))
+        self.strategy_lbl.setText(f"{STRATEGY_OBJECTIVE.get(name, '')}. Target allocation: {mix}. Signal from the funds' NAVs (flat NAV = risk-off), "
+                                  "generated at the prior close, traded at the next close.")
+        if not self.sig_name.text().strip() or self.sig_name.text().strip() in POTOMAC_STRATEGIES:
+            self.sig_name.setText(name)
+
+    def _potomac_state(self) -> None:
+        self.app.status("Pulling Potomac fund NAVs from Yahoo Finance…")
+        run_task(self.svc.potomac_state, on_done=self._potomac_state_done, on_error=lambda m: QMessageBox.warning(self, "Potomac funds", str(m)), wants_progress=False)
+
+    def _potomac_state_done(self, st: dict) -> None:
+        funds = st.get("funds")
+        lines = [f"Fund NAVs as of {st.get('as_of')} (Yahoo Finance):"]
+        if funds is not None and not funds.empty:
+            for _, r in funds.iterrows():
+                lines.append(f"  {r['fund']} {r['name']}: NAV {r['nav']:.2f}, {r['state']} (exposure {r['exposure']:.2f}), flat days last year {r['pct_days_flat_1y']:.0%}")
+        lines.append("Strategies (NAV-implied exposure -> target beta at the saved beta range):")
+        for name, info in st.get("strategies", {}).items():
+            if "error" in info:
+                lines.append(f"  {name}: {info['error']}")
+            else:
+                lines.append(f"  {name}: exposure {info['latest_exposure']:.2f} -> target beta {info['latest_target_beta']:.2f} (core {info['core']}, risk-off {info['pct_days_risk_off_core']:.0%} of days)")
+        self.rec_out.set_text("\n".join(lines))
+        self.app.status("Potomac fund state loaded.")
 
     # ------------------------------------------------------------------ signal actions
     def _browse(self) -> None:
@@ -281,7 +327,7 @@ class TacticalScreen(QWidget):
                 comps.append({"name": part.strip(), "weight": 1.0})
         return SignalSpec(name=self.sig_name.text().strip() or "signal", kind=self.sig_kind.currentData(), beta_min=self.beta_min.value(),
                           beta_max=self.beta_max.value(), manual_beta=self.manual_slider.value() / 100, path=self.csv_path.text().strip() or None,
-                          components=comps)
+                          components=comps, strategy=self.strategy.currentData() if self.sig_kind.currentData() == "potomac" else None)
 
     def _save_signal(self) -> None:
         try:

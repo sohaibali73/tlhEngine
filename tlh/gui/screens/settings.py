@@ -127,7 +127,7 @@ class SettingsScreen(QWidget):
         self.ai_model.addItems(["claude-opus-5", "claude-sonnet-5", "claude-fable-5-1"])
         self.ai_effort = QComboBox()
         self.ai_effort.addItems(["low", "medium", "high", "xhigh", "max"])
-        f.addRow("Anthropic API key", self.api_key)
+        f.addRow("YANG API key", self.api_key)
         f.addRow("", self.api_status)
         f.addRow("Model", self.ai_model)
         f.addRow("Effort", self.ai_effort)

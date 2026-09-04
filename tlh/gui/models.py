@@ -53,14 +53,42 @@ def fmt_value(col: str, v, pct_mode: bool = False) -> str:
 class DataFrameModel(QAbstractTableModel):
     def __init__(self, df: pd.DataFrame | None = None, pct_cols: set[str] | None = None, parent=None):
         super().__init__(parent)
-        self._df = df if df is not None else pd.DataFrame()
         self._pct_cols = pct_cols or set()
+        self._df = pd.DataFrame()
+        self._display: list[list[str]] = []
+        self._vals: list[list] = []
+        self._numeric: list[bool] = []
+        self._cols: list[str] = []
+        self.set_frame(df if df is not None else pd.DataFrame(), _reset=False)
 
     # ------------------------------------------------------------------ data
-    def set_frame(self, df: pd.DataFrame) -> None:
-        self.beginResetModel()
+    def set_frame(self, df: pd.DataFrame, _reset: bool = True) -> None:
+        """Cache display strings, raw values and alignment per column once, so the view's thousands of data() calls
+        (painting, sorting, column sizing) are list lookups instead of pandas scalar access plus formatting."""
+        if _reset:
+            self.beginResetModel()
         self._df = df.reset_index(drop=True) if df is not None else pd.DataFrame()
-        self.endResetModel()
+        self._cols = [str(c) for c in self._df.columns]
+        cols_vals = []
+        cols_disp = []
+        numeric = []
+        for c in self._cols:
+            s = self._df[c]
+            vals = s.tolist()
+            pct = c in self._pct_cols
+            cols_disp.append([fmt_value(c, v, pct_mode=pct) for v in vals])
+            cols_vals.append(vals)
+            numeric.append(bool(pd.api.types.is_numeric_dtype(s)) and not bool(pd.api.types.is_bool_dtype(s)))
+        # row-major for O(1) access in data()
+        n = len(self._df)
+        self._display = [[cols_disp[j][i] for j in range(len(self._cols))] for i in range(n)]
+        self._vals = [[cols_vals[j][i] for j in range(len(self._cols))] for i in range(n)]
+        self._numeric = numeric
+        if _reset:
+            self.endResetModel()
+
+    def display_at(self, row: int, col: int) -> str:
+        return self._display[row][col]
 
     @property
     def frame(self) -> pd.DataFrame:
@@ -82,14 +110,13 @@ class DataFrameModel(QAbstractTableModel):
     def data(self, index, role=Qt.DisplayRole):
         if not index.isValid():
             return None
-        col = str(self._df.columns[index.column()])
-        v = self._df.iat[index.row(), index.column()]
+        r, c = index.row(), index.column()
         if role == Qt.DisplayRole:
-            return fmt_value(col, v, pct_mode=col in self._pct_cols)
+            return self._display[r][c]
         if role == Qt.TextAlignmentRole:
-            if isinstance(v, int | float | np.integer | np.floating) and not isinstance(v, bool):
-                return int(Qt.AlignRight | Qt.AlignVCenter)
-            return int(Qt.AlignLeft | Qt.AlignVCenter)
+            return int(Qt.AlignRight | Qt.AlignVCenter) if self._numeric[c] else int(Qt.AlignLeft | Qt.AlignVCenter)
+        col = self._cols[c]
+        v = self._vals[r][c]
         if role == Qt.ForegroundRole:
             if col in SIGNED and isinstance(v, int | float | np.integer | np.floating) and not (isinstance(v, float) and np.isnan(v)):
                 if v < 0:
@@ -115,7 +142,7 @@ class DataFrameModel(QAbstractTableModel):
         return None
 
     def sort_key(self, row: int, column: int):
-        return self._df.iat[row, column]
+        return self._vals[row][column]
 
     def row_dict(self, row: int) -> dict:
         return self._df.iloc[row].to_dict()

@@ -10,9 +10,10 @@ import json
 from pathlib import Path
 
 import plotly.graph_objects as go
-from PySide6.QtCore import QObject, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QUrl, Signal, Slot
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from ..config import get_settings
 from . import theme
@@ -78,31 +79,62 @@ document.title = 'ready';
 </script></body></html>"""
 
 
-class PlotlyView(QWebEngineView):
+class PlotlyView(QWidget):
+    """A Plotly chart. The QWebEngineView inside is created lazily (first show or first figure), so a screen with six
+    charts constructs in milliseconds instead of ~1.7 s; figures set before that are queued and rendered once ready."""
     point_clicked = Signal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._view: QWebEngineView | None = None
         self._bridge = _Bridge()
-        self._channel = QWebChannel(self.page())
-        self._channel.registerObject("bridge", self._bridge)
-        self.page().setWebChannel(self._channel)
         self._bridge.clicked.connect(self.point_clicked)
-        self.page().setBackgroundColor(theme.BG)
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._placeholder = QLabel("")
+        self._placeholder.setAlignment(Qt.AlignCenter)
+        self._placeholder.setStyleSheet(f"color:{theme.MUTED}; background:{theme.BG};")
+        self._layout.addWidget(self._placeholder)
         self.setMinimumHeight(200)
         self._ready = False
         self._loading = False
         self._pending: tuple[str, str] | None = None      # ("render", json) | ("message", html)
-        self.loadFinished.connect(self._on_loaded)
+
+    # ------------------------------------------------------------------ lazy web view
+    def _ensure_view(self) -> None:
+        if self._view is not None:
+            return
+        v = QWebEngineView(self)
+        self._channel = QWebChannel(v.page())
+        self._channel.registerObject("bridge", self._bridge)
+        v.page().setWebChannel(self._channel)
+        v.page().setBackgroundColor(theme.BG)
+        v.loadFinished.connect(self._on_loaded)
+        self._layout.removeWidget(self._placeholder)
+        self._placeholder.hide()
+        self._layout.addWidget(v)
+        self._view = v
+
+    def showEvent(self, ev) -> None:  # noqa: N802
+        super().showEvent(ev)
+        if self._view is None:
+            # first time on screen: create the web view and load the shell; a figure queued while hidden renders on load
+            self._ensure_view()
+            self._ensure_shell()
+
+    def page(self):
+        self._ensure_view()
+        return self._view.page()
 
     # ------------------------------------------------------------------ shell lifecycle
     def _ensure_shell(self) -> None:
         if self._ready or self._loading:
             return
+        self._ensure_view()
         self._loading = True
         js = QUrl.fromLocalFile(str(plotly_js_path())).toString()
         html = SHELL.format(js=js, bg=theme.BG, muted=theme.MUTED)
-        self.setHtml(html, QUrl.fromLocalFile(str(get_settings().var_dir) + "/"))
+        self._view.setHtml(html, QUrl.fromLocalFile(str(get_settings().var_dir) + "/"))
 
     def _on_loaded(self, ok: bool) -> None:
         self._loading = False
@@ -115,12 +147,13 @@ class PlotlyView(QWebEngineView):
     def _dispatch(self, kind: str, payload: str) -> None:
         if not self._ready:
             self._pending = (kind, payload)
-            self._ensure_shell()
+            if self.isVisible() or self._view is not None:
+                self._ensure_shell()
             return
         if kind == "render":
-            self.page().runJavaScript(f"render({payload});")
+            self._view.page().runJavaScript(f"render({payload});")
         else:
-            self.page().runJavaScript(f"message({json.dumps(payload)});")
+            self._view.page().runJavaScript(f"message({json.dumps(payload)});")
 
     # ------------------------------------------------------------------ public API
     def set_figure(self, fig: go.Figure) -> None:

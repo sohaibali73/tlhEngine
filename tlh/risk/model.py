@@ -178,7 +178,11 @@ class FittedRiskModel:
 
     @property
     def symbols(self) -> list[str]:
-        return list(self.exposures.index)
+        cache = self.__dict__.get("_symbols_cache")
+        if cache is None or cache[0] is not self.exposures:
+            cache = (self.exposures, list(self.exposures.index))
+            self.__dict__["_symbols_cache"] = cache
+        return cache[1]
 
     def align(self, weights: pd.Series) -> tuple[pd.Series, pd.DataFrame, pd.Series]:
         """Restrict to symbols the model knows; unknown symbols raise."""

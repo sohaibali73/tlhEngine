@@ -126,7 +126,7 @@ Start from an example, save yours, export JSON, or click *Ask YANG to design…*
              lambda w: w.screens["TLH model builder"].examples.setCurrentIndex(1),
              lambda w: not w.ctx.pipelines.list().empty, "Design a TLH model pipeline that screens to liquid quality names and harvests toward a 40-name core."),
         Step("yang", "9 · Ask YANG", """
-**YANG** is the embedded co-pilot (built on Claude). It reads the live portfolio, model and runs; runs harvests, builds baskets and strategies, evaluates hand-designed trade plans, fits model variants, and proposes code changes that you approve.
+**YANG** is the embedded co-pilot. It reads the live portfolio, model and runs; runs harvests, builds baskets and strategies, evaluates hand-designed trade plans, fits model variants, and proposes code changes that you approve.
 
 **How:** press **Ctrl+Space** (or **Ctrl+Alt+C** from anywhere on Windows) and type a job, or use the YANG tab for a full conversation.""",
              "AI co-pilot", lambda w: w.screens["AI co-pilot"].input, lambda w: w.show_quick(),
@@ -157,6 +157,17 @@ core, never selling stock, never with futures or shorts, inside the Reg-T / hous
 **Backtest active signal** for the day-by-day simulation. The **levered-beta model** builds an S&P stock + 2x/3x ETF basket at 1.5 beta.""",
              "Tactical overlay", lambda w: w.screens["Tactical overlay"].lb_btn, None,
              lambda w: bool(w.ctx.get("tactical_signals")), "Size today's overlay to take the household to a 1.5 beta and tell me the margin risk."),
+        Step("research", "7c · Research lab: defend every parameter", """
+**TLH research** backtests the harvesting rules on the point-in-time S&P 500 over rolling 5- or 10-year windows starting every
+calendar year since 2000, monthly, with whole shares and wash windows. Sweep account size, basket size, harvest trigger, approach
+(pairs within sector, pairs within index, SARD twin baskets, TE optimizer) and concentrated starts (position size x embedded gain).
+Read losses harvested per year, harvest life before ossification, and tracking error as medians with interquartile ranges.
+
+**How:** build the store once (step 1), set the base case, tick the sweeps, **Estimate**, **Run study**. Results resume if interrupted.
+**Export write-up** produces the due-diligence workbook and markdown.""",
+             "TLH research", lambda w: w.screens["TLH research"].build_btn, None,
+             lambda w: bool(w.screens["TLH research"].svc.list_studies()) if "TLH research" in w.screens else False,
+             "Run a quick research study over triggers and basket sizes and tell me which trigger harvests the most for a 2% tracking error."),
         Step("states", "12b · Every state's capital-gains rules", """
 **Tax rates** maps all 50 states + DC: how each taxes short- and long-term gains (ordinary rates, exclusions, flat capital-gains rates,
 Washington's excise), combined with federal brackets and NIIT at the client's income. Click a state on the map, read the plain-English

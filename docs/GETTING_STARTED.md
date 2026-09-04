@@ -87,14 +87,23 @@ python -m tlh --expert   # every quant workbench (Risk lab, Strategy lab, TLH mo
 
 Press **F1** inside the app for the guided tour, or **Ctrl+H** to return to Start here.
 
+### Optional: the research laboratory
+
+The **TLH research** tab (expert mode) needs its own deep data store. Build it once from the tab (step 1 on the screen)
+or with YANG's `research_store` tool with `build=true`. It pulls every S&P 500 member since 1999 from Norgate (about a
+minute) into `var/research/store`. Studies then run on every core and resume if interrupted.
+
+The **Tactical overlay** tab can read the Potomac strategies from their funds' NAVs. That uses Yahoo Finance (yfinance),
+so the machine needs internet access the first time each day; pulls are cached under `var/tactical/navs`.
+
 ## 5. Prove the install is healthy
 
 Run these in order. Each one should end the way shown.
 
 ```powershell
-python -m pytest                                   # "231 passed"; the wash-sale and lot tests are the compliance gate
+python -m pytest                                   # "249 passed"; the wash-sale and lot tests are the compliance gate
 ruff check tlh tests                               # "All checks passed!"
-$env:PYTHONPATH = "."; python scripts/smoke_tools.py    # ends "63 tools defined; failures: none"
+$env:PYTHONPATH = "."; python scripts/smoke_tools.py    # ends "68 tools defined; failures: none"
 $env:QT_QPA_PLATFORM = "offscreen"; python scripts/smoke_gui.py   # ends "GUI errors: none"
 Remove-Item Env:QT_QPA_PLATFORM
 python scripts/smoke_copilot.py                    # live two-turn YANG exchange; costs a few cents, needs the API key

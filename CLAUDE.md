@@ -26,6 +26,10 @@ FRED_API_KEY, TLH_AI_MODEL, TLH_AI_EFFORT, TLH_VAR_DIR.
             longshort.py (L/S TLH economics), leverage.py (leveraged/inverse ETFs, Reg-T margin policy, levered_beta, tactical overlay sizing +
             daily simulator), tactical.py (target-beta signals: manual / Potomac CSV / example rules / blends), overlay.py (futures reference),
             glidepath.py, backtest.py (walk-forward)
+- research/ due-diligence backtesting lab: data.py (deep Norgate store: every S&P 500 member since 1999, memory-mapped numpy), spec.py
+            (ResearchSpec / StudySpec + the parameter grids), engine.py (monthly lot-level simulator: wash windows, whole shares, pairs /
+            twin-basket / optimizer reinvestment, concentrated unwind, metrics), grid.py (sweep design, ProcessPool runner, parquet results,
+            summaries), report.py (markdown + xlsx write-up)
 - ai/       tools.py (schemas + executor), copilot.py (stream loop, promotion), sandbox.py, registry.py
 - export/   xlsxwriter workbook builder
 - services/ application services that compose the layers for the GUI (no Qt imports here); home_service.py = Start-here one-click flow,
@@ -51,5 +55,11 @@ FRED_API_KEY, TLH_AI_MODEL, TLH_AI_EFFORT, TLH_VAR_DIR.
 - Leverage never comes from futures or short sales (custodian constraint): use INSTRUMENTS in tlh/optim/leverage.py and the MarginPolicy.
   Leveraged funds are modelled as k x the index basket (nominal leverage), not as fitted; `levered_beta` always builds against the index
   benchmark with full replication by default (TE first; see DECISIONS D21). Tactical overlay screen = services/tactical_service.py.
+- Potomac strategies (optim/potomac.py): five funds CRDBX/CRTPX/CRTBX/CRMVX/CRTOX at 80/5/5/5/5; NAVs from yfinance (not Norgate), cached under
+  var/tactical/navs; flat NAV = risk-off; every non-manual signal is lagged one day (prior-close signal, next-close trade). Tests: tests/test_potomac.py.
+- YANG chat rendering lives in gui/screens/copilot.py (md_to_html via markdown-it; headings -> bold labels). quick.py and agent.py reuse it.
 - Adding a co-pilot tool = a schema entry in tlh/ai/tools.py TOOLS plus a `t_<name>` method on ToolExecutor.
+- TLH research (screen "TLH research", expert mode): services/research_service.py; the store lives in var/research/store (rebuild from the screen or
+  the research_store tool); studies in var/research/studies/<name>/ (results.parquet + monthly.parquet, resumable). Adding a harvesting approach =
+  a branch in engine._reinvest/_construct + APPROACHES entry + a test; adding a sweep = grid.design + StudySpec field + SWEEPS in the screen.
 - Persisted conversation content must stay API-replayable: use sanitize_block, never raw model_dump().

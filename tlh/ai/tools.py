@@ -180,14 +180,28 @@ TOOLS: list[dict[str, Any]] = [
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "leverage_instruments", "description": "Leveraged / inverse S&P 500 and Nasdaq-100 ETFs the engine can use instead of futures (leverage, expense ratio), the margin policy (Reg-T initial, maintenance by leverage, buffer, rate, max loan) and the custodian capability table.",
      "input_schema": {"type": "object", "properties": {}}},
-    {"name": "tactical_signal", "description": "Create or update a target-beta signal for the tactical overlay: kind manual (one beta), csv (a Potomac strategy export with date + target_beta/state/score), rule:trend | rule:vol_regime | rule:composite | rule:drawdown (example rules, not Potomac models), or blend (weighted average of saved signals). Optionally make it active.",
-     "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "kind": {"type": "string"}, "manual_beta": {"type": "number"}, "path": {"type": "string"},
+    {"name": "potomac_strategies", "description": "Potomac tactical strategies (Bull Bear, Focused Growth, Guardian, Income Plus, Navigrowth): the 80/5/5/5/5 fund target allocations (CRDBX, CRTPX, CRTBX, CRMVX, CRTOX) and, with state=true, the latest NAV-implied risk-on/off exposure of each fund and strategy from Yahoo Finance (flat NAV = risk-off; signal at the prior close, traded next close).",
+     "input_schema": {"type": "object", "properties": {"state": {"type": "boolean"}, "refresh": {"type": "boolean"}}}},
+    {"name": "tactical_signal", "description": "Create or update a target-beta signal for the tactical overlay: kind manual (one beta), potomac (a Potomac strategy read from its funds' NAVs; pass strategy = Bull Bear | Focused Growth | Guardian | Income Plus | Navigrowth), csv (a Potomac strategy export with date + target_beta/state/score), rule:trend | rule:vol_regime | rule:composite | rule:drawdown (example rules, not Potomac models), or blend (weighted average of saved signals). All but manual are lagged one day (signal at the prior close, traded next close). Optionally make it active.",
+     "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "kind": {"type": "string"}, "strategy": {"type": "string"}, "manual_beta": {"type": "number"}, "path": {"type": "string"},
                                                         "beta_min": {"type": "number"}, "beta_max": {"type": "number"},
                                                         "components": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "weight": {"type": "number"}}}},
                                                         "activate": {"type": "boolean"}, "description": {"type": "string"}}, "required": ["name", "kind"]}},
     {"name": "list_tactical_signals", "description": "Saved tactical signals with statistics and which one is active.", "input_schema": {"type": "object", "properties": {}}},
     {"name": "tactical_overlay", "description": "Size today's leveraged / inverse ETF overlay that moves the household's total beta to the target (active signal or an explicit beta) without selling core stock, within the margin policy: ticket, candidate table, margin usage, carry, tax avoided vs selling core.",
      "input_schema": {"type": "object", "properties": {"target_beta": {"type": "number"}, "cash": {"type": "number"}}}},
+    {"name": "research_store", "description": "TLH research laboratory data store status (every S&P 500 member since 1999, delisted included); build=true pulls it from Norgate (about a minute).",
+     "input_schema": {"type": "object", "properties": {"build": {"type": "boolean"}}}},
+    {"name": "run_research_study", "description": "Run (or resume) a due-diligence backtest study of the harvesting parameters over rolling windows since 2000 on the point-in-time S&P 500: sweeps over account_size ($10k..$1m), basket_size (50..300), trigger (0.01%..1%), approach (pairs_sector, pairs_index, twin_baskets, optimizer), concentrated (position size x embedded gain grid). Metrics: losses harvested per year, harvest life / half-life (ossification), realised and forecast tracking error, turnover, names held. quick=true uses every 3rd start year. Long-running: prefer quick=true or a single window (research_single_window) in conversation.",
+     "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "sweeps": {"type": "array", "items": {"type": "string"}}, "horizon_years": {"type": "integer"},
+                                                        "quick": {"type": "boolean"}, "base": {"type": "object", "description": "ResearchSpec overrides: account_size, basket_size, trigger, approach, te_limit, sector_band, factor_alignment, whole_shares"},
+                                                        "first_start_year": {"type": "integer"}, "last_start_year": {"type": "integer"}}}},
+    {"name": "research_results", "description": "Read a research study: findings, the summary table for one sweep (median + IQR across windows), the concentrated grid, or the full markdown write-up (section='report').",
+     "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "section": {"type": "string", "enum": ["findings", "sweep", "concentrated", "report", "list"]}, "sweep": {"type": "string"}}}},
+    {"name": "research_single_window", "description": "Simulate one harvesting window (e.g. 2015 to 2025) with explicit parameters and return its metrics and yearly harvest; fast (seconds). Use it to look inside a result or answer what-if questions.",
+     "input_schema": {"type": "object", "properties": {"start_year": {"type": "integer"}, "horizon_years": {"type": "integer"}, "account_size": {"type": "number"}, "basket_size": {"type": "integer"},
+                                                        "trigger": {"type": "number"}, "approach": {"type": "string"}, "concentrated_pct": {"type": "number"}, "concentrated_gain": {"type": "number"},
+                                                        "concentrated_symbol": {"type": "string"}, "te_limit": {"type": "number"}, "sector_band": {"type": "number"}}}},
     {"name": "tactical_backtest", "description": "Daily simulation of the core plus a signal-driven leveraged/inverse ETF overlay (leveraged-fund compounding, expense, margin interest, costs): equity vs core vs index, realised beta, drawdown, overlay losses booked.",
      "input_schema": {"type": "object", "properties": {"signal": {"type": "string"}, "start": {"type": "string"}, "long_instrument": {"type": "string"}, "inverse_instrument": {"type": "string"}}}},
     {"name": "import_holdings", "description": "Import a broker CSV/Excel holdings export (Schwab, Fidelity, IBKR, TradeStation, Vanguard, generic) into the current entity as tax lots. dry_run=true only previews the parsed rows and column mapping.",
@@ -205,7 +219,18 @@ def _js(o):
     return str(o)
 
 
+try:
+    import orjson as _orjson
+except Exception:  # pragma: no cover - optional speed-up
+    _orjson = None
+
+
 def dumps(obj, **kw) -> str:
+    if _orjson is not None and not kw:
+        try:
+            return _orjson.dumps(obj, default=_js, option=_orjson.OPT_SERIALIZE_NUMPY | _orjson.OPT_NON_STR_KEYS).decode()
+        except Exception:
+            pass
     return json.dumps(obj, default=_js, **kw)
 
 
@@ -834,12 +859,23 @@ class ToolExecutor:
         return dumps({"instruments": records(svc.instruments()), "margin_policy": asdict(svc.policy()), "custodians": records(custodian_capabilities()),
                       "note": "No futures, no direct shorts: inverse funds cut beta, leveraged funds raise it; leveraged funds decay with volatility."}), None
 
-    def t_tactical_signal(self, name: str, kind: str, manual_beta: float = 1.0, path: str | None = None, beta_min: float = 0.0, beta_max: float = 1.5,
-                          components: list[dict] | None = None, activate: bool = False, description: str = ""):
+    def t_potomac_strategies(self, state: bool = False, refresh: bool = False):
+        svc = self._tactical()
+        out = svc.potomac_strategies()
+        out["holdings"] = records(out["holdings"])
+        if state:
+            st = svc.potomac_state(refresh=refresh)
+            out["as_of"] = st["as_of"]
+            out["funds"] = records(st["funds"])
+            out["strategy_state"] = st["strategies"]
+        return dumps(out), None
+
+    def t_tactical_signal(self, name: str, kind: str, strategy: str | None = None, manual_beta: float = 1.0, path: str | None = None, beta_min: float = 0.0,
+                          beta_max: float = 1.5, components: list[dict] | None = None, activate: bool = False, description: str = ""):
         from ..optim.tactical import SignalSpec
         svc = self._tactical()
-        out = svc.save_signal(SignalSpec(name=name, kind=kind, manual_beta=float(manual_beta), path=path, beta_min=float(beta_min), beta_max=float(beta_max),
-                                         components=components or [], description=description))
+        out = svc.save_signal(SignalSpec(name=name, kind=kind, strategy=strategy, manual_beta=float(manual_beta), path=path, beta_min=float(beta_min),
+                                         beta_max=float(beta_max), components=components or [], description=description))
         if activate:
             svc.set_active(name)
         return dumps({**out, "active": svc.active_name()}), None
@@ -860,6 +896,61 @@ class ToolExecutor:
         return dumps({"signal": res["signal"], "core_source": res["core_source"], "metrics": res["metrics"],
                       "yearly_returns": {str(k.year): round(float(v), 4) for k, v in yearly.items()},
                       "note": "simulation with leveraged-fund daily compounding, expense ratios, margin interest and 5 bps costs; not a forecast"}), None
+
+    # ------------------------------------------------------------------ research laboratory
+    def _research(self):
+        from ..services.research_service import ResearchService
+        return ResearchService(self.ctx)
+
+    def t_research_store(self, build: bool = False):
+        svc = self._research()
+        if build:
+            return dumps(svc.build_store()), None
+        return dumps(svc.store_status()), None
+
+    def t_run_research_study(self, name: str = "MVP", sweeps: list[str] | None = None, horizon_years: int = 10, quick: bool = True, base: dict | None = None,
+                             first_start_year: int = 2000, last_start_year: int | None = None):
+        svc = self._research()
+        study = svc.default_study(name, quick=quick)
+        study.horizons = [int(horizon_years)]
+        study.first_start_year = int(first_start_year)
+        study.last_start_year = last_start_year
+        if sweeps:
+            study.sweeps = [s for s in sweeps if s in ("account_size", "basket_size", "trigger", "approach", "concentrated")]
+        if base:
+            study.base = study.base.with_(**{k: v for k, v in base.items() if hasattr(study.base, k)})
+        study.base = study.base.with_(horizon_years=int(horizon_years))
+        est = svc.estimate(study)
+        out = svc.run_study(study)
+        return dumps({**out, "estimate": est, "findings": svc.report(name).split("## Findings")[1].split("##")[0].strip().splitlines()[:8]}), None
+
+    def t_research_results(self, name: str | None = None, section: str = "findings", sweep: str | None = None):
+        svc = self._research()
+        if section == "list" or not name:
+            return dumps({"studies": svc.list_studies(), "store": svc.store_status()}), None
+        if section == "report":
+            return svc.report(name), None
+        if section == "sweep":
+            return dumps({"sweep": sweep or "base", "table": records(svc.summary(name, sweep or "base"))}), None
+        if section == "concentrated":
+            cg = svc.concentrated(name)
+            hv = svc.concentrated(name, "harvested_per_year_pct")
+            return dumps({"months_to_diversify": {f"{i:.0%}": {f"{c:.0%}": (None if pd.isna(v) else round(float(v), 1)) for c, v in row.items()} for i, row in cg.iterrows()} if not cg.empty else {},
+                          "harvest_per_year": {f"{i:.0%}": {f"{c:.0%}": (None if pd.isna(v) else round(float(v), 4)) for c, v in row.items()} for i, row in hv.iterrows()} if not hv.empty else {}}), None
+        from ..research.report import findings
+        _study, res, _mon = svc.load(name)
+        return dumps({"study": name, "runs": int(len(res)), "findings": findings(res)}), None
+
+    def t_research_single_window(self, start_year: int = 2015, horizon_years: int = 10, account_size: float = 500_000, basket_size: int = 150, trigger: float = 0.0025,
+                                 approach: str = "optimizer", concentrated_pct: float = 0.0, concentrated_gain: float = 0.0, concentrated_symbol: str | None = None,
+                                 te_limit: float = 0.02, sector_band: float = 0.02):
+        from ..research.spec import ResearchSpec
+        spec = ResearchSpec(start_year=int(start_year), horizon_years=int(horizon_years), account_size=float(account_size), basket_size=int(basket_size), trigger=float(trigger),
+                            approach=approach, concentrated_pct=float(concentrated_pct), concentrated_gain=float(concentrated_gain), concentrated_symbol=concentrated_symbol,
+                            te_limit=float(te_limit), sector_band=float(sector_band))
+        res = self._research().run_single(spec)
+        return dumps({"spec": spec.to_dict(), "metrics": res.metrics, "warnings": res.warnings,
+                      "note": "historical simulation on the point-in-time S&P 500 with whole shares and wash windows; not a forecast"}), None
 
     def t_import_holdings(self, path: str, account_name: str = "Imported brokerage", account_type: str = "taxable", dry_run: bool = False):
         from ..services.import_service import ImportService, plan_import

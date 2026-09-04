@@ -1,6 +1,6 @@
-"""'Ask Claude' pop-up, system-wide hotkey (Windows) and tray icon.
+"""'Ask YANG' pop-up, system-wide hotkey (Windows) and tray icon.
 
-The pop-up is a Spotlight-style frameless window: type a job, press Enter, Claude does it with the full tool set
+The pop-up is a Spotlight-style frameless window: type a job, press Enter, YANG does it with the full tool set
 as an ad-hoc agent run, streams progress, and files the report. Summoned by Ctrl+Space inside the app or by the
 global hotkey (default Ctrl+Alt+C) from anywhere on the desktop, or from the tray icon.
 """
@@ -194,7 +194,7 @@ class QuickAsk(QDialog):
         self._bus = bus
         eff = self.effort.currentText()
         run_task(lambda: svc.run_adhoc(prompt, trigger="popup", effort=eff, on_text=bus.text.emit, on_status=bus.status.emit),
-                 on_done=bus.done.emit, on_error=bus.failed.emit, wants_progress=False)
+                 on_done=lambda r: bus.done.emit(r), on_error=lambda m: bus.failed.emit(m), wants_progress=False)
 
     def _stop(self) -> None:
         self.main.agent_service.copilot.cancel()

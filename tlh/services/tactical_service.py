@@ -85,13 +85,38 @@ class TacticalService:
                 return close[sym].dropna()
         return None
 
+    # ------------------------------------------------------------------ Potomac strategies (fund NAVs via yfinance)
+    def nav_cache_dir(self):
+        return self.store.root / "navs"
+
+    def potomac_strategies(self) -> dict:
+        from ..optim.potomac import STRATEGIES, STRATEGY_OBJECTIVE, holdings_table
+        return {"strategies": {k: {"weights": v, "objective": STRATEGY_OBJECTIVE.get(k, "")} for k, v in STRATEGIES.items()}, "holdings": holdings_table()}
+
+    def potomac_state(self, refresh: bool = False) -> dict:
+        """Latest NAV-implied state of every fund and every strategy (pulls from Yahoo Finance, cached 12 h)."""
+        from ..optim.potomac import STRATEGIES, fetch_navs, fund_state_table, strategy_signal
+        navs = fetch_navs(cache_dir=self.nav_cache_dir(), cache_hours=0 if refresh else 12)
+        funds = fund_state_table(navs)
+        strategies = {}
+        for name in STRATEGIES:
+            try:
+                _s, info = strategy_signal(name, navs=navs)
+                strategies[name] = info
+            except Exception as e:  # noqa: BLE001
+                strategies[name] = {"error": str(e)}
+        return {"funds": funds, "strategies": strategies, "as_of": str(navs.index[-1].date()) if len(navs) else None}
+
     def save_signal(self, spec: SignalSpec) -> dict:
         idx = self.index_prices()
         library = {n: self.store.load(n) for n in self.registry()} if spec.kind == "blend" else None
-        s = build_signal(spec, index_prices=idx, library=library)
+        s = build_signal(spec, index_prices=idx, library=library, cache_dir=self.nav_cache_dir())
         self.store.save(spec.name, s)
         reg = self.registry()
-        reg[spec.name] = {"kind": spec.kind, "description": spec.description or RULES.get(spec.kind, ""), "spec": asdict(spec)}
+        desc = spec.description or RULES.get(spec.kind, "")
+        if spec.kind == "potomac":
+            desc = desc or f"Potomac {spec.strategy}: NAV-implied exposure of the 80/5/5/5/5 fund mix, traded next close"
+        reg[spec.name] = {"kind": spec.kind, "description": desc, "spec": asdict(spec)}
         self.ctx.set("tactical_signals", reg)
         if self.active_name() is None:
             self.set_active(spec.name)

@@ -1,7 +1,7 @@
 # TLH Engine with YANG: the algorithms, the rigor, and why tax-loss harvesting should be AI-assisted
 
 *Technical and positioning write-up. Everything described here is implemented in this repository and covered by the
-test suite (231 tests, wash-sale and holding-period rules hand-verified against IRS Publication 550 examples).*
+test suite (249 tests, wash-sale and holding-period rules hand-verified against IRS Publication 550 examples).*
 
 ---
 
@@ -428,13 +428,29 @@ and the volatility drag of daily rebalancing, a loan pays margin interest. On li
 on a 50% loan) has a model tracking error of about 0.03% and a realised leverage-layer tracking error of about 0.3% a year
 at monthly rebalancing; the cash-only book, where 2x and 3x funds carry the leverage, is about 0.5%. The model is always
 built against the index benchmark, never against a saved basket. The margin report states the uniform market drop that
-would trigger a call. The tactical overlay is the plug-in for Potomac's own strategies: a
-signal (strategy export, manual beta, or a blend) sets a target beta between 0 and 1.5, and the engine sizes the single
+would trigger a call. The tactical overlay is the plug-in for Potomac's own strategies: each strategy holds the same five
+tactical funds at 80/5/5/5/5 target allocations, and its exposure is read daily from the funds' NAVs (a fund in cash prints a
+flat NAV; a risk-on day is worth the fund's slow beta), generated at the prior close and traded at the next close. That signal,
+a strategy export, a manual beta or a blend sets a target beta between 0 and 1.5, and the engine sizes the single
 leveraged or inverse fund that moves the whole book to that beta without selling a share of the tax-sensitive core,
 reporting the margin consumed, the annual carry and the capital-gains tax the alternative of selling stock would have
 realised. A daily simulator replays any signal with fund compounding, fees, interest and costs.
 
-### 14.7 Fast
+### 14.7 The research laboratory: defending the parameters
+Before an advisor commits to a trigger, a basket size or a minimum account, the rule has to survive due diligence. The
+research laboratory backtests the harvesting rules on the point-in-time S&P 500 (every member since 1999, delisted names
+sold at their last close) over rolling five- and ten-year windows that start on the first trading day of every calendar
+year from 2000, reviewed monthly, with whole shares and the two wash-sale rules that bind a research account. It reports
+the *distribution* of outcomes across windows (median and interquartile range) for losses harvested per year, harvest
+life and half-life before the account ossifies, realised and forecast tracking error, turnover and names held, as a
+function of account size ($10k to $1m), basket size (50 to 300 names), harvest trigger (0.01% to 1% of account value),
+harvesting approach (pairs on the fly within sector or index, SARD-paired twin baskets, or the tracking-error optimizer
+with sector and factor-alignment bands) and a concentrated starting position (size times embedded gain), which is unwound
+only as far as realised losses cover its gain. The risk model throughout is the calibrated 126-day Ledoit-Wolf covariance.
+Runs execute across every core, resume if interrupted, and export a markdown and Excel write-up with the method,
+findings, tables and caveats a reviewer expects.
+
+### 14.8 Fast
 The window appears in about 1.5 seconds instead of six: the solvers are imported lazily and warmed up in the
 background, the settings loader lost its pydantic dependency, screens are constructed on first visit, and charts update
-through `Plotly.react` instead of reloading a four-megabyte script per figure. The test suite grew to 231 tests.
+through `Plotly.react` instead of reloading a four-megabyte script per figure. The test suite grew to 249 tests.

@@ -34,6 +34,7 @@ from .screens.export import ExportScreen
 from .screens.harvest import HarvestScreen
 from .screens.home import HomeScreen
 from .screens.portfolio import PortfolioScreen
+from .screens.research import ResearchScreen
 from .screens.risk import RiskScreen
 from .screens.risk_lab import RiskLabScreen
 from .screens.settings import SettingsScreen
@@ -110,6 +111,7 @@ class MainWindow(QMainWindow):
             "Concentration": lambda: ConcentrationScreen(self), "Model portfolios": lambda: BasketsScreen(self),
             "Strategy lab": lambda: StrategyScreen(self), "TLH model builder": lambda: BuilderScreen(self),
             "Tactical overlay": lambda: TacticalScreen(self),
+            "TLH research": lambda: ResearchScreen(self),
             "Tax rates": lambda: TaxRatesScreen(self),
             "AI co-pilot": lambda: CopilotScreen(self), "Agent": lambda: AgentScreen(self), "Export": lambda: ExportScreen(self),
             "Settings": lambda: SettingsScreen(self),
@@ -159,7 +161,7 @@ class MainWindow(QMainWindow):
         a_yang.triggered.connect(self.show_quick)
         help_menu.addAction(a_yang)
         a_about = QAction("About TLH Engine / YANG", self)
-        a_about.triggered.connect(lambda: QMessageBox.information(self, "TLH Engine", "Tax-Loss Harvesting Engine with YANG, the embedded quant co-pilot (built on Claude). "
+        a_about.triggered.connect(lambda: QMessageBox.information(self, "TLH Engine", "Tax-Loss Harvesting Engine with YANG, the embedded quant co-pilot. "
                                                                                        "Decision support only: nothing places orders. See DECISIONS.md for conventions."))
         help_menu.addAction(a_about)
 
@@ -235,7 +237,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ cross-screen
     def _wire_screen(self, name: str, s) -> None:
         """Connect a freshly built screen's signals (called by ScreenRegistry on first construction)."""
-        if name in ("Portfolio", "Harvest", "Model portfolios", "Strategy lab", "TLH model builder", "Concentration", "Home", "Tax rates", "Tactical overlay"):
+        if name in ("Portfolio", "Harvest", "Model portfolios", "Strategy lab", "TLH model builder", "Concentration", "Home", "Tax rates", "Tactical overlay", "TLH research"):
             s.data_changed.connect(self.data_changed)
         elif name == "Risk model":
             s.model_changed.connect(self.data_changed)
@@ -258,7 +260,7 @@ class MainWindow(QMainWindow):
         self.screens.refresh_all(skip={"AI co-pilot"}, on_error=lambda n, e: self.status(f"{n} refresh failed: {e}"))
 
     # ------------------------------------------------------------------ simple / expert mode
-    EXPERT_ONLY = ("Risk lab", "Strategy lab", "TLH model builder", "Agent", "Export")
+    EXPERT_ONLY = ("Risk lab", "Strategy lab", "TLH model builder", "TLH research", "Agent", "Export")
 
     def set_ui_mode(self, mode: str) -> None:
         """'simple' hides the quant workbenches so an advisor sees Home, Portfolio, Harvest, Risk model, Concentration,

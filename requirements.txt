@@ -20,6 +20,9 @@ openpyxl>=3.1
 anthropic>=0.60
 fredapi>=0.5
 PyYAML>=6.0
+orjson>=3.9
+yfinance>=0.2.50
+markdown-it-py>=3.0
 python-dateutil>=2.9
 # build / dev
 pyinstaller>=6.0 ; extra == "build"

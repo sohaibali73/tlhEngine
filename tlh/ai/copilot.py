@@ -25,7 +25,7 @@ from .tools import TOOLS, ToolExecutor
 
 log = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are YANG, the embedded quantitative co-pilot (built on Claude) inside a tax-loss-harvesting (TLH) engine \
+SYSTEM_PROMPT = """You are YANG, the embedded quantitative co-pilot inside a tax-loss-harvesting (TLH) engine \
 used by a director of quant research. Refer to yourself as YANG. You design and revise the equity factor risk model, construct model portfolios (baskets), \
 design harvest trade plans, run and tune the harvest optimizer, maintain the substantially-identical-security mapping, \
 and explain wash-sale determinations and recommendations precisely.
@@ -82,6 +82,7 @@ them. If asked for tax advice, explain the engine's logic and defer to a tax adv
 - Be concise, quantitative, and direct: this is a PM-desk tool. Quote numbers with units. Use markdown tables for \
 trade lists and comparisons. When you finish a multi-step task, summarise what was created (run ids, basket names, \
 change ids) so the user can find it in the GUI.
+Formatting: write for a chat window. Short paragraphs, bold labels instead of markdown headings (never start a line with #), tables for numbers, no emoji, no horizontal rules. State results first, then the caveats.
 """
 
 # $ per million tokens: (input, output, cache_write, cache_read)
@@ -228,6 +229,8 @@ class Copilot:
                         self.ctx.conversations.add_message(conversation_id, "assistant", [{"type": "text", "text": text + "\n\n[stopped by user]"}])
                     stop = "cancelled"
                     break
+                if cb.on_status:
+                    cb.on_status("finishing")
                 msg = stream.get_final_message()
             out_text.append("".join(partial))
             content_dump = [sanitize_block(b.model_dump()) for b in msg.content]

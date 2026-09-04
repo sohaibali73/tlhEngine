@@ -57,6 +57,12 @@ AI_EDITABLE: dict[str, EditableModule] = {
     "tlh/tax/concentration.py": EditableModule(
         "tlh/tax/concentration.py", "Bracket-aware tax engine (LTCG/ordinary/NIIT, convex pieces), Black-Scholes collars with §1259/§1092 flags, charitable/gift/exchange-fund/step-up comparisons.",
         ["tests/test_concentration.py"]),
+    "tlh/research/engine.py": EditableModule(
+        "tlh/research/engine.py", "TLH research simulator: monthly lot-level harvesting with wash windows, whole shares, pairs / twin-basket / optimizer reinvestment, metrics.",
+        ["tests/test_research.py"], reload_hint="Re-run the study after promotion (results are cached per parameter set)."),
+    "tlh/research/spec.py": EditableModule(
+        "tlh/research/spec.py", "Research parameter grids (account sizes, basket sizes, triggers, approaches, concentrated grid) and the approach descriptions.",
+        ["tests/test_research.py"]),
     "tlh/optim/glidepath.py": EditableModule(
         "tlh/optim/glidepath.py", "Multi-period tax-aware diversification glide path (convex) and Monte Carlo policy comparison.",
         ["tests/test_concentration.py"]),

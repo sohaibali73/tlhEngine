@@ -4,10 +4,15 @@ Potomac's tactical strategies are proprietary; this module is the plug-in point 
 target beta in [0, beta_max] (or a risk-on / risk-off state that maps to two betas). Sources:
 
     manual        one number, set by the operator or YANG ("today's target beta is 1.2")
+    potomac       a Potomac strategy (Bull Bear, Focused Growth, Guardian, Income Plus, Navigrowth) read from its funds' NAVs
+                  (optim/potomac.py): flat NAV = risk-off, otherwise rolling beta; 80/5/5/5/5 target allocations
     csv           a file exported from a Potomac strategy: columns date + (target_beta | state | score)
     rule:*        transparent example rules for testing and demonstration (trend, volatility regime, composite);
                   they are NOT Potomac's models
     blend         weighted average of several signals (e.g. three Potomac strategies with allocations)
+
+Timing: every signal except `manual` is generated on the prior close and traded on the next close (`lag_days = 1`): the
+target beta used on day t is the value observed at t-1.
 
 Signals are persisted as Parquet under var/tactical/ with a small registry in the settings table. This module is
 AI-editable (ai/registry.py): YANG can add rules or blends.
@@ -34,7 +39,11 @@ RULES = {
 @dataclass
 class SignalSpec:
     name: str = "manual"
-    kind: str = "manual"               # manual | csv | rule:trend | rule:vol_regime | rule:composite | rule:drawdown | blend
+    kind: str = "manual"               # manual | potomac | csv | rule:trend | rule:vol_regime | rule:composite | rule:drawdown | blend
+    strategy: str | None = None        # potomac: Bull Bear | Focused Growth | Guardian | Income Plus | Navigrowth
+    lag_days: int = 1                  # signal known at the prior close, traded at the next close (0 = same-day, for research only)
+    nav_window: int = 60               # potomac: risk-on days used for the slow beta (what a risk-on day is worth)
+    nav_confirm_days: int = 1          # potomac: consecutive flat-NAV days before calling a fund risk-off
     beta_min: float = 0.0
     beta_max: float = 1.5
     manual_beta: float = 1.0
@@ -101,11 +110,17 @@ def load_csv_signal(path: str | Path, spec: SignalSpec) -> pd.Series:
 
 
 def build_signal(spec: SignalSpec, index_prices: pd.Series | None = None, library: dict[str, pd.Series] | None = None,
-                 dates: pd.DatetimeIndex | None = None) -> pd.Series:
+                 dates: pd.DatetimeIndex | None = None, navs: pd.DataFrame | None = None, cache_dir=None) -> pd.Series:
     if spec.kind == "manual":
         idx = dates if dates is not None else (index_prices.index if index_prices is not None else pd.DatetimeIndex([pd.Timestamp.today().normalize()]))
         return pd.Series(float(np.clip(spec.manual_beta, spec.beta_min, spec.beta_max)), index=idx, name=spec.name)
-    if spec.kind == "csv":
+    if spec.kind == "potomac":
+        from .potomac import strategy_signal
+        if not spec.strategy:
+            raise ValueError("potomac signal needs a strategy name")
+        s, _info = strategy_signal(spec.strategy, spec.beta_min, spec.beta_max, lag_days=spec.lag_days, navs=navs, cache_dir=cache_dir, window=spec.nav_window,
+                                   confirm_days=spec.nav_confirm_days)
+    elif spec.kind == "csv":
         if not spec.path:
             raise ValueError("csv signal needs a path")
         s = load_csv_signal(spec.path, spec)
@@ -130,6 +145,8 @@ def build_signal(spec: SignalSpec, index_prices: pd.Series | None = None, librar
         s = _clip(s, spec).dropna()          # dates before a component starts are dropped, not guessed
     else:
         raise ValueError(f"unknown signal kind {spec.kind}")
+    if spec.kind in ("csv", "blend") or spec.kind.startswith("rule:"):
+        s = s.shift(spec.lag_days).dropna() if spec.lag_days else s    # generated at the prior close, traded at the next close
     if dates is not None:
         s = s.reindex(dates).ffill()
     s.name = spec.name
@@ -138,7 +155,7 @@ def build_signal(spec: SignalSpec, index_prices: pd.Series | None = None, librar
 
 def signal_stats(s: pd.Series) -> dict:
     s = s.dropna()
-    changes = (s.diff().abs() > 1e-9).sum()
+    changes = (s.diff().abs() > 0.05).sum()               # moves of at least 0.05 beta count as a change
     return {"n_days": int(len(s)), "start": str(s.index.min().date()) if len(s) else None, "end": str(s.index.max().date()) if len(s) else None,
             "mean_beta": float(s.mean()) if len(s) else None, "pct_days_risk_on": float((s >= s.max() - 1e-9).mean()) if len(s) else None,
             "pct_days_min": float((s <= s.min() + 1e-9).mean()) if len(s) else None, "changes": int(changes),
@@ -161,14 +178,21 @@ class SignalStore:
         series.rename("target_beta").to_frame().to_parquet(p)
         return p
 
+    _cache: dict[str, tuple[float, pd.Series]] = {}
+
     def load(self, name: str) -> pd.Series | None:
         p = self.path(name)
         if not p.exists():
             return None
+        mtime = p.stat().st_mtime
+        hit = SignalStore._cache.get(str(p))
+        if hit is not None and hit[0] == mtime:
+            return hit[1].copy()
         df = pd.read_parquet(p)
         s = df["target_beta"]
         s.index = pd.to_datetime(s.index)
-        return s
+        SignalStore._cache[str(p)] = (mtime, s)
+        return s.copy()
 
     def delete(self, name: str) -> None:
         p = self.path(name)
